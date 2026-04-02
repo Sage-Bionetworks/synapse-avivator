@@ -5,7 +5,7 @@ import requests
 import synapseclient
 
 # --- Configuration ---
-ENTITY_ID = "syn..."           # Replace with a real OME-TIFF Synapse entity ID
+ENTITY_ID = "syn74307866"      # OME-TIFF entity on Synapse
 SYNAPSE_AUTH_TOKEN = None      # Set explicitly or leave None to use ~/.synapseConfig
 
 # --- Constants ---
