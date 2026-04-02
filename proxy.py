@@ -99,6 +99,10 @@ _block_cache_bytes = 0
 _tile_cache: OrderedDict[str, bytes] = OrderedDict()   # "eid:start-end" → bytes
 _tile_cache_bytes = 0
 
+# Total file size per entity, learned from S3's Content-Range header
+_file_sizes: dict[str, int] = {}
+_CONTENT_RANGE_RE = re.compile(r"bytes \d+-\d+/(\d+)")
+
 
 def _block_get(entity_id: str, start: int, length: int) -> bytes | None:
     """Try to serve a range from an aligned block."""
@@ -145,12 +149,21 @@ def _tile_put(entity_id: str, start: int, end: int, data: bytes) -> None:
         _tile_cache_bytes -= len(evicted)
 
 
-def _make_206(data: bytes, start: int, end: int) -> Response:
+def _learn_file_size(entity_id: str, r: httpx.Response) -> None:
+    """Extract total file size from S3's Content-Range header."""
+    cr = r.headers.get("content-range", "")
+    m = _CONTENT_RANGE_RE.match(cr)
+    if m:
+        _file_sizes[entity_id] = int(m.group(1))
+
+
+def _make_206(entity_id: str, data: bytes, start: int, end: int) -> Response:
+    total = _file_sizes.get(entity_id, "*")
     return Response(
         content=data,
         status_code=206,
         headers={
-            "Content-Range": f"bytes {start}-{end}/*",
+            "Content-Range": f"bytes {start}-{end}/{total}",
             "Content-Type": "image/tiff",
             "Content-Length": str(len(data)),
             "Accept-Ranges": "bytes",
@@ -195,13 +208,13 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         hit = _tile_get(entity_id, req_start, req_end)
         if hit is not None:
             print(f"[cache] TILE {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
-            return _make_206(hit, req_start, req_end)
+            return _make_206(entity_id, hit, req_start, req_end)
 
         # Tier 1: block-aligned match (covers small reads including 1-byte probes)
         hit = _block_get(entity_id, req_start, req_len)
         if hit is not None:
             print(f"[cache] BLOCK {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
-            return _make_206(hit, req_start, req_end)
+            return _make_206(entity_id, hit, req_start, req_end)
 
     # ─── Cache miss → fetch from S3 ──────────────────────────
     loop = asyncio.get_running_loop()
@@ -243,22 +256,25 @@ async def proxy_image(full_path: str, request: Request) -> Response:
 
     # ─── Block strategy: buffer, cache block, serve requested slice ──
     if strategy == "block" and r.status_code in (200, 206):
+        _learn_file_size(entity_id, r)
         block_data = await r.aread()
         block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
         _block_put(entity_id, block_start, block_data)
         off = req_start - block_start
         chunk = block_data[off: off + req_len]
         print(f"[S3→block] {entity_id}  bytes={req_start}-{req_end}  fetch={BLOCK_SIZE//1024}KB  {elapsed*1000:.0f}ms", flush=True)
-        return _make_206(chunk, req_start, req_end)
+        return _make_206(entity_id, chunk, req_start, req_end)
 
     # ─── Tile strategy: buffer, cache exact range, serve ─────────────
     if strategy == "tile" and r.status_code in (200, 206):
+        _learn_file_size(entity_id, r)
         tile_data = await r.aread()
         _tile_put(entity_id, req_start, req_end, tile_data)
         print(f"[S3→tile] {entity_id}  bytes={req_start}-{req_end}  {len(tile_data)}B  {elapsed*1000:.0f}ms", flush=True)
-        return _make_206(tile_data, req_start, req_end)
+        return _make_206(entity_id, tile_data, req_start, req_end)
 
     # ─── Stream strategy: pass through ───────────────────────────────
+    _learn_file_size(entity_id, r)
     resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
     cl = resp_headers.get("content-length", "?")
     print(f"[S3→stream] {entity_id}  {raw_range or 'full'}  -> {r.status_code}  {cl}B  {elapsed*1000:.0f}ms", flush=True)
