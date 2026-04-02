@@ -29,22 +29,29 @@ from starlette.staticfiles import StaticFiles
 from synapse_avivator.refreshing_url import RefreshingUrl
 
 # ─── Session logging ──────────────────────────────────────────────────
-# Each server run creates a timestamped log file in logs/
-_log_dir = Path("logs")
-_log_dir.mkdir(exist_ok=True)
-_session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-_log_path = str(_log_dir / f"session-{_session_id}.log")
-
+# Quiet by default. Enable with --verbose flag to write session logs to logs/.
 log = logging.getLogger("proxy")
-log.setLevel(logging.DEBUG)
-_fh = logging.FileHandler(_log_path)
-_fh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d  %(message)s", datefmt="%H:%M:%S"))
-log.addHandler(_fh)
-_sh = logging.StreamHandler()
-_sh.setFormatter(logging.Formatter("%(message)s"))
-log.addHandler(_sh)
+log.setLevel(logging.WARNING)  # quiet until set_verbose(True)
+_log_path: str | None = None
 
-log.info("session %s  log: %s", _session_id, _log_path)
+
+def set_verbose(enabled: bool) -> None:
+    """Enable detailed logging to stdout + file. Called by CLI with --verbose."""
+    global _log_path
+    if not enabled:
+        return
+    log.setLevel(logging.DEBUG)
+    _log_dir = Path("logs")
+    _log_dir.mkdir(exist_ok=True)
+    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    _log_path = str(_log_dir / f"session-{session_id}.log")
+    fh = logging.FileHandler(_log_path)
+    fh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d  %(message)s", datefmt="%H:%M:%S"))
+    log.addHandler(fh)
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(sh)
+    log.info("session %s  log: %s", session_id, _log_path)
 
 _http: httpx.AsyncClient | None = None
 
@@ -194,7 +201,6 @@ def _learn_file_size(entity_id: str, r: httpx.Response) -> None:
 @app.get("/stats")
 async def stats():
     return {
-        "session": _session_id,
         "log": _log_path,
         "block_cache": {"entries": len(_block_cache), "bytes": _block_cache_bytes},
         "tile_cache": {"entries": len(_tile_cache), "bytes": _tile_cache_bytes},

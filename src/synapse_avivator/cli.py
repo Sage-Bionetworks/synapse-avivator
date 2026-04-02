@@ -32,6 +32,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Synapse personal access token. Falls back to SYNAPSE_AUTH_TOKEN env var, then ~/.synapseConfig.",
     )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging to logs/ directory",
+    )
     return parser.parse_args(argv)
 
 
@@ -60,8 +66,9 @@ def main(argv: list[str] | None = None) -> None:
     syn = authenticate(args.token)
     print(f"Logged in as {syn.credentials.owner_id}")
 
-    from synapse_avivator.proxy import set_synapse_client
+    from synapse_avivator.proxy import set_synapse_client, set_verbose
     set_synapse_client(syn)
+    set_verbose(args.verbose)
 
     url = build_browser_url(args.port, args.entity_id)
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
