@@ -111,10 +111,15 @@ def _getter(object_id: str) -> BaseRefreshingUrl:
     if object_id not in _getters:
         if _SYN_ID_RE.match(object_id):
             _getters[object_id] = SynapseRefreshingUrl(object_id, _syn)
-        elif _GEN3_GUID_RE.match(object_id) and _gen3_auth is not None:
+        elif object_id.startswith("drs://"):
+            if _gen3_auth is None:
+                raise ValueError(
+                    f"Gen3 auth required for DRS URI: {object_id}. "
+                    f"Install gen3 package and place credentials at ~/.gen3/credentials.json"
+                )
             _getters[object_id] = Gen3RefreshingUrl(object_id, _gen3_endpoint, _gen3_auth)
         else:
-            raise ValueError(f"Unknown ID format or missing auth: {object_id}")
+            raise ValueError(f"Unknown ID format: {object_id}")
     return _getters[object_id]
 
 
@@ -124,10 +129,6 @@ _PASSTHROUGH_HEADERS = {
 _TIFF_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
 _SYN_ID_RE = re.compile(r"^syn\d+$")
 _OFFSETS_SUFFIX = ".offsets.json"
-
-
-def _is_valid_id(id_str: str) -> bool:
-    return bool(_SYN_ID_RE.match(id_str) or _GEN3_GUID_RE.match(id_str))
 _RANGE_RE = re.compile(r"bytes=(\d+)-(\d+)")
 
 # ─── Two-tier range cache ─────────────────────────────────────────────
@@ -255,32 +256,58 @@ def _make_206(entity_id: str, data: bytes, start: int, end: int) -> Response:
     )
 
 
-@app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
-async def proxy_image(full_path: str, request: Request) -> Response:
-    if "/" in full_path:
-        return Response(status_code=404)
+def _parse_image_path(full_path: str) -> str | None:
+    """Extract a Synapse ID or DRS URI from the URL path. Returns None if invalid.
 
-    # Serve pre-generated offsets sidecar if present on disk
-    if full_path.endswith(_OFFSETS_SUFFIX):
-        entity_id = full_path[: -len(_OFFSETS_SUFFIX)]
-        if not _is_valid_id(entity_id):
-            return Response(status_code=404)
-        try:
-            with open(f"{entity_id}.offsets.json", "rb") as f:
-                data = f.read()
-            log.info("[proxy] offsets %s  %dB", entity_id, len(data))
-            return Response(content=data, media_type="application/json")
-        except FileNotFoundError:
-            return Response(status_code=404)
-
-    entity_id = full_path
+    Handles:
+      syn12345.ome.tiff                          → syn12345
+      syn12345.offsets.json                       → None (offsets handled separately)
+      drs/nci-crdc.datacommons.io/dg.4DFC/UUID.ome.tiff → drs://nci-crdc.datacommons.io/dg.4DFC/UUID
+    """
+    # Strip TIFF suffix
+    cleaned = full_path
     for suffix in _TIFF_SUFFIXES:
-        if entity_id.lower().endswith(suffix):
-            entity_id = entity_id[: -len(suffix)]
+        if cleaned.lower().endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
             break
 
-    if not _is_valid_id(entity_id):
+    # DRS path: drs/{host}/{object_id...}
+    if cleaned.startswith("drs/"):
+        parts = cleaned[len("drs/"):]
+        slash = parts.find("/")
+        if slash > 0:
+            return f"drs://{parts}"
+        return None
+
+    # Synapse ID: no slashes allowed
+    if "/" in cleaned:
+        return None
+    if _SYN_ID_RE.match(cleaned):
+        return cleaned
+    return None
+
+
+@app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
+async def proxy_image(full_path: str, request: Request) -> Response:
+    # Serve pre-generated offsets sidecar if present on disk (Synapse only)
+    if full_path.endswith(_OFFSETS_SUFFIX):
+        entity_id = full_path[: -len(_OFFSETS_SUFFIX)]
+        if "/" not in entity_id and _SYN_ID_RE.match(entity_id):
+            try:
+                with open(f"{entity_id}.offsets.json", "rb") as f:
+                    data = f.read()
+                log.info("[proxy] offsets %s  %dB", entity_id, len(data))
+                return Response(content=data, media_type="application/json")
+            except FileNotFoundError:
+                pass
         return Response(status_code=404)
+
+    object_id = _parse_image_path(full_path)
+    if object_id is None:
+        return Response(status_code=404)
+
+    # Use object_id as the cache/getter key from here on
+    entity_id = object_id
 
     raw_range = request.headers.get("range", "")
     m = _RANGE_RE.match(raw_range) if raw_range else None

@@ -23,7 +23,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "entity_id",
         nargs="?",
         default=None,
-        help="Synapse entity ID (syn12345) or Gen3 GUID (uuid). Opens browser to that image.",
+        help="Synapse entity ID (syn12345) or DRS URI (drs://host/object_id). Opens browser to that image.",
     )
     parser.add_argument(
         "--port",
@@ -59,7 +59,12 @@ def build_browser_url(port: int, entity_id: str | None) -> str:
     base = f"http://localhost:{port}"
     if entity_id is None:
         return f"{base}/"
-    image_url = f"{base}/image/{entity_id}.ome.tiff"
+    # DRS URI → URL path: drs://host/obj → /image/drs/host/obj.ome.tiff
+    if entity_id.startswith("drs://"):
+        path_part = entity_id[len("drs://"):]
+        image_url = f"{base}/image/drs/{path_part}.ome.tiff"
+    else:
+        image_url = f"{base}/image/{entity_id}.ome.tiff"
     return f"{base}/?image_url={quote(image_url, safe='')}"
 
 

@@ -71,17 +71,38 @@ class SynapseRefreshingUrl(BaseRefreshingUrl):
 
 
 class Gen3RefreshingUrl(BaseRefreshingUrl):
-    """Presigned URL manager for Gen3/DRS objects."""
+    """Presigned URL manager for Gen3/DRS objects.
 
-    def __init__(self, guid: str, gen3_endpoint: str, gen3_auth):
-        super().__init__(guid, expiry_secs=3600)  # Gen3 URLs typically 1 hour
-        self._endpoint = gen3_endpoint
-        self._auth = gen3_auth
+    Accepts a full DRS URI (drs://host/object_id) or a bare object ID.
+    The endpoint and auth can be provided explicitly or parsed from the URI.
+    """
+
+    def __init__(self, drs_uri: str, default_endpoint: str | None = None, default_auth=None):
+        parsed = self.parse_drs_uri(drs_uri)
+        if parsed:
+            self._endpoint = f"https://{parsed[0]}"
+            object_id = parsed[1]
+        else:
+            self._endpoint = default_endpoint
+            object_id = drs_uri
+        super().__init__(object_id, expiry_secs=3600)  # Gen3 URLs typically 1 hour
+        self._auth = default_auth
+
+    @staticmethod
+    def parse_drs_uri(uri: str) -> tuple[str, str] | None:
+        """Parse drs://host/object_id → (host, object_id) or None."""
+        if not uri.startswith("drs://"):
+            return None
+        rest = uri[len("drs://"):]
+        slash = rest.find("/")
+        if slash < 0:
+            return None
+        return rest[:slash], rest[slash + 1:]
 
     def _fetch(self) -> str:
         from gen3.file import Gen3File
 
-        print(f"[refresh] fetching new presigned URL for {self.object_id} (Gen3)")
+        print(f"[refresh] fetching new presigned URL for {self.object_id} (Gen3: {self._endpoint})")
         file_client = Gen3File(self._endpoint, self._auth)
         result = file_client.get_presigned_url(self.object_id, protocol="s3")
         if not result or "url" not in result:
