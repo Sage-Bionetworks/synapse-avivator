@@ -9,13 +9,13 @@ Synapse presigned URLs expire after 15 minutes. Byte-range image viewers like Av
 ## Install
 
 ```bash
-pip install synapse-avivator
+pip install git+https://github.com/Sage-Bionetworks/synapse-avivator.git
 ```
 
 Or run directly without installing:
 
 ```bash
-uvx synapse-avivator syn51671125
+uvx --from git+https://github.com/Sage-Bionetworks/synapse-avivator.git synapse-avivator syn51671125
 ```
 
 ## Usage
