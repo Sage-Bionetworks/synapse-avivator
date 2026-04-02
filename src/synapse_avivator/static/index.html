@@ -8,21 +8,23 @@
     input { width: 100%; padding: 8px; font-size: 16px; margin: 8px 0; box-sizing: border-box; }
     button { padding: 8px 24px; font-size: 16px; cursor: pointer; }
     .status { color: #666; font-size: 14px; margin-top: 16px; }
-    .user-bar { color: #666; font-size: 14px; margin-bottom: 16px; }
-    .login-prompt { margin: 40px 0; text-align: center; }
+    .token-section { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+    .token-section p { margin: 0 0 8px 0; font-size: 14px; color: #666; }
     .hidden { display: none; }
+    .connected { color: #2a7; font-weight: bold; }
   </style>
 </head>
 <body>
   <h1>synapse-avivator</h1>
 
-  <div id="login-prompt" class="login-prompt hidden">
-    <p>Log in with your Synapse account to view images.</p>
-    <a href="/auth/login"><button>Login with Synapse</button></a>
+  <div id="token-section" class="token-section hidden">
+    <p>Paste your Synapse Personal Access Token (<a href="https://www.synapse.org/#!PersonalAccessTokens:" target="_blank">get one here</a>). It stays in your browser and is never stored on the server.</p>
+    <input id="token" type="password" placeholder="Synapse Personal Access Token" />
+    <button onclick="saveToken()">Connect</button>
+    <span id="token-status"></span>
   </div>
 
-  <div id="main-ui" class="hidden">
-    <div id="user-bar" class="user-bar"></div>
+  <div id="main-ui">
     <p>Enter a Synapse entity ID or DRS URI to view in Avivator:</p>
     <input id="entity" type="text" placeholder="syn74326609 or drs://nci-crdc.datacommons.io/..." />
     <button onclick="go()">Open in Avivator</button>
@@ -37,21 +39,28 @@
       window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(imageUrl);
     }
 
-    // Check auth status
-    fetch("/auth/me").then(r => {
-      if (r.status === 401) {
-        // Hosted mode, not logged in
-        document.getElementById("login-prompt").classList.remove("hidden");
-      } else {
-        r.json().then(data => {
-          document.getElementById("main-ui").classList.remove("hidden");
-          if (data.mode === "hosted") {
-            document.getElementById("user-bar").innerHTML =
-              "Logged in as " + data.user_id + ' &mdash; <a href="/auth/logout">logout</a>';
-          }
-        });
+    // Check if we're in hosted mode
+    fetch("/auth/me").then(r => r.json()).then(data => {
+      if (data.mode === "hosted") {
+        document.getElementById("token-section").classList.remove("hidden");
+        // Restore token from sessionStorage
+        const saved = sessionStorage.getItem("synapse_token");
+        if (saved) {
+          document.getElementById("token").value = saved;
+          document.getElementById("token-status").innerHTML = '<span class="connected">Connected</span>';
+        }
       }
+    }).catch(() => {
+      // hosted mode, 401
+      document.getElementById("token-section").classList.remove("hidden");
     });
+
+    function saveToken() {
+      const token = document.getElementById("token").value.trim();
+      if (!token) return;
+      sessionStorage.setItem("synapse_token", token);
+      document.getElementById("token-status").innerHTML = '<span class="connected">Connected</span>';
+    }
 
     function go() {
       const eid = document.getElementById("entity").value.trim();
@@ -65,6 +74,14 @@
         document.getElementById("status").textContent = "Enter a Synapse ID (syn...) or DRS URI (drs://...)";
         return;
       }
+
+      // In hosted mode, Avivator can't send custom headers to our proxy.
+      // So we encode the token in the URL as a query param that the proxy strips.
+      const token = sessionStorage.getItem("synapse_token");
+      if (token) {
+        url += "?token=" + encodeURIComponent(token);
+      }
+
       window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(url);
     }
 

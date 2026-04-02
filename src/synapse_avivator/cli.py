@@ -50,7 +50,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--hosted",
         action="store_true",
         default=False,
-        help="Run in hosted mode with Synapse OAuth2 login (requires SYNAPSE_OAUTH_CLIENT_ID and SYNAPSE_OAUTH_CLIENT_SECRET env vars)",
+        help="Run in hosted mode — users provide their Synapse PAT in the browser UI (no local auth needed)",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -103,20 +103,13 @@ def authenticate_gen3(endpoint: str, creds_path: Path | None):
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    from synapse_avivator.proxy import set_synapse_client, set_gen3_client, set_verbose, set_oauth_config
+    from synapse_avivator.proxy import set_synapse_client, set_gen3_client, set_verbose, set_hosted_mode
     set_verbose(args.verbose)
 
     if args.hosted:
-        # Hosted mode: OAuth2 login, no local Synapse client needed at startup
-        from synapse_avivator.auth import OAuthConfig
-        client_id = os.environ.get("SYNAPSE_OAUTH_CLIENT_ID")
-        client_secret = os.environ.get("SYNAPSE_OAUTH_CLIENT_SECRET")
-        if not client_id or not client_secret:
-            print("ERROR: --hosted requires SYNAPSE_OAUTH_CLIENT_ID and SYNAPSE_OAUTH_CLIENT_SECRET env vars")
-            raise SystemExit(1)
-        redirect_uri = f"http://localhost:{args.port}/auth/callback"
-        set_oauth_config(OAuthConfig(client_id, client_secret, redirect_uri))
-        print(f"Hosted mode: OAuth2 login enabled (callback: {redirect_uri})")
+        # Hosted mode: users provide tokens via the browser UI
+        set_hosted_mode(True)
+        print("Hosted mode: users provide Synapse PAT in browser")
     else:
         # Local mode: authenticate with Synapse directly
         print("Authenticating with Synapse...")
