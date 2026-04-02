@@ -82,7 +82,26 @@ S3 (presigned URL)
 
 - Python 3.10+
 - A Synapse account with access to the target files
-- Source OME-TIFF files must be **tiled** (512x512) for interactive viewing. Untiled files will load but require downloading full planes.
+
+### Image file requirements
+
+This tool works best with **tiled, pyramidal OME-TIFF** files. Tiling (e.g., 512x512) allows the viewer to fetch only the pixels needed for the current viewport via byte-range requests. Pyramid levels (multi-resolution) enable smooth zooming without downloading full-resolution data.
+
+**Untiled files** will load but perform poorly — the viewer must download entire image planes to display any region, which is impractical for large files.
+
+You can check if your file is tiled with:
+```bash
+python -c "
+import tifffile
+with tifffile.TiffFile('your_file.ome.tiff') as tif:
+    for i, level in enumerate(tif.series[0].levels):
+        page = level.pages[0]
+        tile = (getattr(page, 'tilelength', 0), getattr(page, 'tilewidth', 0))
+        print(f'Level {i}: {level.shape}  tile={tile}')
+"
+```
+
+If `tile=(0, 0)`, the file is not tiled and will need to be re-converted for interactive viewing.
 
 ## Offsets sidecar
 
