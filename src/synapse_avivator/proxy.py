@@ -95,12 +95,21 @@ async def strip_token_from_log(request: Request, call_next):
     return await call_next(request)
 
 _static_dir = Path(__file__).parent / "static"
-if _static_dir.is_dir():
-    app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="assets")
+_viewer_dir = _static_dir / "viewer"
 
+if _static_dir.is_dir():
+    # Landing page at /
     @app.get("/")
     async def index():
         return FileResponse(_static_dir / "index.html")
+
+    # Bundled Avivator viewer at /viewer
+    if _viewer_dir.is_dir():
+        @app.get("/viewer")
+        async def viewer():
+            return FileResponse(_viewer_dir / "index.html")
+
+        app.mount("/viewer", StaticFiles(directory=_viewer_dir), name="viewer")
 
 _syn: synapseclient.Synapse | None = None
 _gen3_endpoint: str | None = None

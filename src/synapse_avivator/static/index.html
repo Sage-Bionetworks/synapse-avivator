@@ -36,7 +36,7 @@
     const params = new URLSearchParams(window.location.search);
     const imageUrl = params.get("image_url");
     if (imageUrl) {
-      window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(imageUrl);
+      window.location.href = "/viewer/?image_url=" + encodeURIComponent(imageUrl);
     }
 
     // Check if we're in hosted mode
@@ -75,14 +75,9 @@
         return;
       }
 
-      // In hosted mode, Avivator can't send custom headers to our proxy.
-      // So we encode the token in the URL as a query param that the proxy strips.
-      const token = sessionStorage.getItem("synapse_token");
-      if (token) {
-        url += "?token=" + encodeURIComponent(token);
-      }
-
-      window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(url);
+      // Token is in sessionStorage — the bundled Avivator's fetch interceptor
+      // reads it and adds X-Synapse-Token header automatically. No URL leakage.
+      window.location.href = "/viewer/?image_url=" + encodeURIComponent(url);
     }
 
     document.getElementById("entity").addEventListener("keydown", e => {
