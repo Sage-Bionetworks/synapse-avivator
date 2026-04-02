@@ -7,7 +7,9 @@ Usage:
 Then point Avivator at:
     http://localhost:8000/image/syn74307866
 """
+import asyncio
 import re
+from contextlib import asynccontextmanager
 
 import httpx
 import synapseclient
@@ -16,7 +18,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from demo import SYNAPSE_AUTH_TOKEN, RefreshingUrl
 
-app = FastAPI()
+_http: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _http
+    _http = httpx.AsyncClient(follow_redirects=True, timeout=60)
+    yield
+    await _http.aclose()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Allow browser-based viewers (Avivator, Vitessce) to make cross-origin requests
 app.add_middleware(
@@ -71,19 +84,20 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         return Response(status_code=404)
 
     getter = _getter(entity_id)
-    url = getter()
+    # synapseclient is synchronous — run in thread pool to avoid blocking the event loop
+    loop = asyncio.get_running_loop()
+    url = await loop.run_in_executor(None, getter)
 
     forward: dict[str, str] = {}
     if "range" in request.headers:
         forward["Range"] = request.headers["range"]
 
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        r = await client.request(request.method, url, headers=forward)
+    r = await _http.request(request.method, url, headers=forward)
 
-        if r.status_code == 403:
-            getter.invalidate()
-            url = getter()
-            r = await client.request(request.method, url, headers=forward)
+    if r.status_code == 403:
+        getter.invalidate()
+        url = await loop.run_in_executor(None, getter)
+        r = await _http.request(request.method, url, headers=forward)
 
     resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
 
