@@ -26,7 +26,7 @@ from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
-from synapse_avivator.refreshing_url import RefreshingUrl
+from synapse_avivator.refreshing_url import BaseRefreshingUrl, SynapseRefreshingUrl, Gen3RefreshingUrl
 
 # ─── Session logging ──────────────────────────────────────────────────
 # Quiet by default. Enable with --verbose flag to write session logs to logs/.
@@ -84,6 +84,8 @@ if _static_dir.is_dir():
         return FileResponse(_static_dir / "index.html")
 
 _syn: synapseclient.Synapse | None = None
+_gen3_endpoint: str | None = None
+_gen3_auth = None  # gen3.auth.Gen3Auth instance
 
 
 def set_synapse_client(syn: synapseclient.Synapse) -> None:
@@ -92,13 +94,28 @@ def set_synapse_client(syn: synapseclient.Synapse) -> None:
     _syn = syn
 
 
-_getters: dict[str, RefreshingUrl] = {}
+def set_gen3_client(endpoint: str, auth) -> None:
+    """Called by CLI to inject Gen3 auth."""
+    global _gen3_endpoint, _gen3_auth
+    _gen3_endpoint = endpoint
+    _gen3_auth = auth
 
 
-def _getter(entity_id: str) -> RefreshingUrl:
-    if entity_id not in _getters:
-        _getters[entity_id] = RefreshingUrl(entity_id, _syn)
-    return _getters[entity_id]
+_getters: dict[str, BaseRefreshingUrl] = {}
+
+# Gen3 GUIDs look like UUIDs: 8-4-4-4-12 hex chars
+_GEN3_GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _getter(object_id: str) -> BaseRefreshingUrl:
+    if object_id not in _getters:
+        if _SYN_ID_RE.match(object_id):
+            _getters[object_id] = SynapseRefreshingUrl(object_id, _syn)
+        elif _GEN3_GUID_RE.match(object_id) and _gen3_auth is not None:
+            _getters[object_id] = Gen3RefreshingUrl(object_id, _gen3_endpoint, _gen3_auth)
+        else:
+            raise ValueError(f"Unknown ID format or missing auth: {object_id}")
+    return _getters[object_id]
 
 
 _PASSTHROUGH_HEADERS = {
@@ -107,6 +124,10 @@ _PASSTHROUGH_HEADERS = {
 _TIFF_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
 _SYN_ID_RE = re.compile(r"^syn\d+$")
 _OFFSETS_SUFFIX = ".offsets.json"
+
+
+def _is_valid_id(id_str: str) -> bool:
+    return bool(_SYN_ID_RE.match(id_str) or _GEN3_GUID_RE.match(id_str))
 _RANGE_RE = re.compile(r"bytes=(\d+)-(\d+)")
 
 # ─── Two-tier range cache ─────────────────────────────────────────────
@@ -242,7 +263,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
     # Serve pre-generated offsets sidecar if present on disk
     if full_path.endswith(_OFFSETS_SUFFIX):
         entity_id = full_path[: -len(_OFFSETS_SUFFIX)]
-        if not _SYN_ID_RE.match(entity_id):
+        if not _is_valid_id(entity_id):
             return Response(status_code=404)
         try:
             with open(f"{entity_id}.offsets.json", "rb") as f:
@@ -258,7 +279,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
             entity_id = entity_id[: -len(suffix)]
             break
 
-    if not _SYN_ID_RE.match(entity_id):
+    if not _is_valid_id(entity_id):
         return Response(status_code=404)
 
     raw_range = request.headers.get("range", "")

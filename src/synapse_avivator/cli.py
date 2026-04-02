@@ -4,22 +4,26 @@ import argparse
 import os
 import threading
 import webbrowser
+from pathlib import Path
 from urllib.parse import quote
 
 import synapseclient
 import uvicorn
 
+_DEFAULT_GEN3_ENDPOINT = "https://nci-crdc.datacommons.io"
+_DEFAULT_GEN3_CREDS = Path.home() / ".gen3" / "credentials.json"
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="synapse-avivator",
-        description="View Synapse-hosted OME-TIFF images in Avivator",
+        description="View Synapse or Gen3/DRS-hosted OME-TIFF images in Avivator",
     )
     parser.add_argument(
         "entity_id",
         nargs="?",
         default=None,
-        help="Synapse entity ID (e.g., syn51671125). Opens browser to that image.",
+        help="Synapse entity ID (syn12345) or Gen3 GUID (uuid). Opens browser to that image.",
     )
     parser.add_argument(
         "--port",
@@ -31,6 +35,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--token",
         default=None,
         help="Synapse personal access token. Falls back to SYNAPSE_AUTH_TOKEN env var, then ~/.synapseConfig.",
+    )
+    parser.add_argument(
+        "--gen3-endpoint",
+        default=_DEFAULT_GEN3_ENDPOINT,
+        help=f"Gen3 endpoint URL (default: {_DEFAULT_GEN3_ENDPOINT})",
+    )
+    parser.add_argument(
+        "--gen3-creds",
+        default=None,
+        help=f"Path to Gen3 credentials.json (default: {_DEFAULT_GEN3_CREDS})",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -49,7 +63,7 @@ def build_browser_url(port: int, entity_id: str | None) -> str:
     return f"{base}/?image_url={quote(image_url, safe='')}"
 
 
-def authenticate(token: str | None) -> synapseclient.Synapse:
+def authenticate_synapse(token: str | None) -> synapseclient.Synapse:
     syn = synapseclient.Synapse()
     auth_token = token or os.environ.get("SYNAPSE_AUTH_TOKEN")
     if auth_token:
@@ -59,16 +73,40 @@ def authenticate(token: str | None) -> synapseclient.Synapse:
     return syn
 
 
+def authenticate_gen3(endpoint: str, creds_path: Path | None):
+    """Attempt Gen3 auth. Returns (endpoint, auth) or (None, None) if unavailable."""
+    creds = Path(creds_path) if creds_path else _DEFAULT_GEN3_CREDS
+    if not creds.exists():
+        return None, None
+    try:
+        from gen3.auth import Gen3Auth
+        auth = Gen3Auth(endpoint=endpoint, refresh_file=str(creds))
+        return endpoint, auth
+    except ImportError:
+        return None, None
+    except Exception as e:
+        print(f"Gen3 auth failed ({e}), Gen3 sources unavailable")
+        return None, None
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
     print("Authenticating with Synapse...")
-    syn = authenticate(args.token)
+    syn = authenticate_synapse(args.token)
     print(f"Logged in as {syn.credentials.owner_id}")
 
-    from synapse_avivator.proxy import set_synapse_client, set_verbose
+    from synapse_avivator.proxy import set_synapse_client, set_gen3_client, set_verbose
     set_synapse_client(syn)
     set_verbose(args.verbose)
+
+    # Attempt Gen3 auth (optional — works if credentials exist)
+    gen3_endpoint, gen3_auth = authenticate_gen3(args.gen3_endpoint, args.gen3_creds)
+    if gen3_auth:
+        set_gen3_client(gen3_endpoint, gen3_auth)
+        print(f"Gen3 authenticated ({gen3_endpoint})")
+    else:
+        print("Gen3 not configured (install gen3 package + ~/.gen3/credentials.json to enable)")
 
     url = build_browser_url(args.port, args.entity_id)
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
