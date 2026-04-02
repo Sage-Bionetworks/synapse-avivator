@@ -7,6 +7,8 @@ Usage:
 Then point Avivator at:
     http://localhost:8000/image/syn74307866
 """
+import re
+
 import httpx
 import synapseclient
 from fastapi import FastAPI, Request, Response
@@ -48,6 +50,7 @@ _PASSTHROUGH_HEADERS = {
 
 
 _TIFF_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
+_SYN_ID_RE = re.compile(r"^syn\d+$")
 
 
 @app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
@@ -62,6 +65,10 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         if entity_id.lower().endswith(suffix):
             entity_id = entity_id[: -len(suffix)]
             break
+
+    # Reject anything that isn't a bare Synapse ID (e.g. .offsets.json probes)
+    if not _SYN_ID_RE.match(entity_id):
+        return Response(status_code=404)
 
     getter = _getter(entity_id)
     url = getter()
