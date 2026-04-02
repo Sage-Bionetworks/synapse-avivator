@@ -27,8 +27,8 @@ class RefreshingUrl:
 
     def _fetch(self) -> str:
         print(f"[refresh] fetching new presigned URL for {self.entity_id}")
-        entity = self.syn.get(self.entity_id, downloadFile=False)
-        file_handle_id = entity._file_handle["id"]
+        entity = self.syn.restGET(f"/entity/{self.entity_id}")
+        file_handle_id = entity["dataFileHandleId"]
         response = self.syn.restPOST(
             "/fileHandle/batch",
             body=json.dumps({
@@ -41,6 +41,7 @@ class RefreshingUrl:
                 "includeFileHandles": False,
                 "includePreviewPreSignedURLs": False,
             }),
+            endpoint=self.syn.fileHandleEndpoint,
         )
         files = response.get("requestedFiles", [])
         if not files or "preSignedURL" not in files[0]:

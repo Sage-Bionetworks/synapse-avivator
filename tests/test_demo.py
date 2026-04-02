@@ -5,10 +5,7 @@ import pytest
 
 def make_syn(url="https://s3.example.com/file.tiff?X-Amz-Signature=abc"):
     syn = MagicMock()
-    entity = MagicMock()
-    entity.id = "syn123"
-    entity._file_handle = {"id": "99999"}
-    syn.get.return_value = entity
+    syn.restGET.return_value = {"dataFileHandleId": "99999"}
     syn.restPOST.return_value = {
         "requestedFiles": [{"preSignedURL": url}]
     }
@@ -35,10 +32,7 @@ def test_refreshing_url_caches_url_when_fresh():
 def test_refreshing_url_refreshes_when_stale():
     from demo import RefreshingUrl
     syn = MagicMock()
-    entity = MagicMock()
-    entity.id = "syn123"
-    entity._file_handle = {"id": "99999"}
-    syn.get.return_value = entity
+    syn.restGET.return_value = {"dataFileHandleId": "99999"}
     syn.restPOST.side_effect = [
         {"requestedFiles": [{"preSignedURL": "https://example.com/v1"}]},
         {"requestedFiles": [{"preSignedURL": "https://example.com/v2"}]},
@@ -53,10 +47,7 @@ def test_refreshing_url_refreshes_when_stale():
 def test_refreshing_url_invalidate_forces_refresh():
     from demo import RefreshingUrl
     syn = MagicMock()
-    entity = MagicMock()
-    entity.id = "syn123"
-    entity._file_handle = {"id": "99999"}
-    syn.get.return_value = entity
+    syn.restGET.return_value = {"dataFileHandleId": "99999"}
     syn.restPOST.side_effect = [
         {"requestedFiles": [{"preSignedURL": "https://example.com/v1"}]},
         {"requestedFiles": [{"preSignedURL": "https://example.com/v2"}]},
