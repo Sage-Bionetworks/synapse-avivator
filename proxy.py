@@ -10,6 +10,7 @@ Then point Avivator at:
 import asyncio
 import re
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
 import httpx
@@ -66,37 +67,90 @@ _SYN_ID_RE = re.compile(r"^syn\d+$")
 _OFFSETS_SUFFIX = ".offsets.json"
 _RANGE_RE = re.compile(r"bytes=(\d+)-(\d+)")
 
-# Block cache: absorbs GeoTIFF.js's 1-byte probe + immediate re-read pattern.
-# When a tiny read comes in, we fetch a full BLOCK from S3 and cache it.
-# The follow-up read at the same offset is then a local memory hit.
-# Keyed by (entity_id, block_start). LRU eviction at CACHE_MAX_BLOCKS entries.
-BLOCK_SIZE = 131072          # 128 KB per cache block
-CACHE_MAX_BLOCKS = 512       # ~64 MB total cache
+# ─── Two-tier range cache ─────────────────────────────────────────────
+#
+# Tier 1 — Block cache (aligned 256 KB blocks)
+#   Absorbs all reads ≤ BLOCK_SIZE.  GeoTIFF.js does many 1-byte probes
+#   followed by 64-128 KB re-reads at the same offset. By fetching one
+#   aligned block up-front, the follow-up read is a memory hit.
+#
+# Tier 2 — Tile cache (exact range responses)
+#   Caches tile-sized responses (> BLOCK_SIZE, ≤ TILE_CACHE_ENTRY_MAX)
+#   keyed by exact range.  Revisiting a viewport serves from memory.
+#
+# Reads larger than TILE_CACHE_ENTRY_MAX stream through uncached.
+# ──────────────────────────────────────────────────────────────────────
 
-_block_cache: dict[tuple[str, int], bytes] = {}
-_block_cache_order: list[tuple[str, int]] = []  # insertion order for LRU eviction
+BLOCK_SIZE = 256 * 1024               # 256 KB aligned blocks
+BLOCK_CACHE_MAX = 256 * 1024 * 1024   # 256 MB budget for blocks
+
+TILE_CACHE_ENTRY_MAX = 2 * 1024 * 1024  # cache tiles up to 2 MB
+TILE_CACHE_MAX = 256 * 1024 * 1024       # 256 MB budget for tiles
+
+# OrderedDict gives us move-to-end for LRU + popitem(last=False) for eviction
+_block_cache: OrderedDict[tuple[str, int], bytes] = OrderedDict()
+_block_cache_bytes = 0
+
+_tile_cache: OrderedDict[str, bytes] = OrderedDict()   # "eid:start-end" → bytes
+_tile_cache_bytes = 0
 
 
-def _cache_get(entity_id: str, start: int, length: int) -> bytes | None:
+def _block_get(entity_id: str, start: int, length: int) -> bytes | None:
+    """Try to serve a range from an aligned block."""
     block_start = (start // BLOCK_SIZE) * BLOCK_SIZE
     key = (entity_id, block_start)
     block = _block_cache.get(key)
     if block is None:
         return None
+    _block_cache.move_to_end(key)   # LRU touch
     off = start - block_start
     chunk = block[off: off + length]
     return chunk if len(chunk) == length else None
 
 
-def _cache_put(entity_id: str, block_start: int, data: bytes) -> None:
+def _block_put(entity_id: str, block_start: int, data: bytes) -> None:
+    global _block_cache_bytes
     key = (entity_id, block_start)
     if key in _block_cache:
-        return  # already cached
+        return
     _block_cache[key] = data
-    _block_cache_order.append(key)
-    while len(_block_cache_order) > CACHE_MAX_BLOCKS:
-        evict = _block_cache_order.pop(0)
-        _block_cache.pop(evict, None)
+    _block_cache_bytes += len(data)
+    while _block_cache_bytes > BLOCK_CACHE_MAX:
+        _, evicted = _block_cache.popitem(last=False)
+        _block_cache_bytes -= len(evicted)
+
+
+def _tile_get(entity_id: str, start: int, end: int) -> bytes | None:
+    key = f"{entity_id}:{start}-{end}"
+    data = _tile_cache.get(key)
+    if data is not None:
+        _tile_cache.move_to_end(key)
+    return data
+
+
+def _tile_put(entity_id: str, start: int, end: int, data: bytes) -> None:
+    global _tile_cache_bytes
+    key = f"{entity_id}:{start}-{end}"
+    if key in _tile_cache:
+        return
+    _tile_cache[key] = data
+    _tile_cache_bytes += len(data)
+    while _tile_cache_bytes > TILE_CACHE_MAX:
+        _, evicted = _tile_cache.popitem(last=False)
+        _tile_cache_bytes -= len(evicted)
+
+
+def _make_206(data: bytes, start: int, end: int) -> Response:
+    return Response(
+        content=data,
+        status_code=206,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/*",
+            "Content-Type": "image/tiff",
+            "Content-Length": str(len(data)),
+            "Accept-Ranges": "bytes",
+        },
+    )
 
 
 @app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
@@ -130,32 +184,41 @@ async def proxy_image(full_path: str, request: Request) -> Response:
     req_end   = int(m.group(2)) if m else None
     req_len   = (req_end - req_start + 1) if m else None
 
-    # --- Cache read path ---
+    # ─── Cache lookup (GET only) ──────────────────────────────
     if req_start is not None and req_len is not None and request.method == "GET":
-        cached = _cache_get(entity_id, req_start, req_len)
-        if cached is not None:
-            print(f"[cache] HIT  {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
-            headers = {
-                "Content-Range": f"bytes {req_start}-{req_end}/*",
-                "Content-Type":  "image/tiff",
-                "Content-Length": str(len(cached)),
-            }
-            return Response(content=cached, status_code=206, headers=headers)
+        # Tier 2: exact tile match
+        hit = _tile_get(entity_id, req_start, req_end)
+        if hit is not None:
+            print(f"[cache] TILE {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
+            return _make_206(hit, req_start, req_end)
 
+        # Tier 1: block-aligned match (covers small reads including 1-byte probes)
+        hit = _block_get(entity_id, req_start, req_len)
+        if hit is not None:
+            print(f"[cache] BLOCK {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
+            return _make_206(hit, req_start, req_end)
+
+    # ─── Cache miss → fetch from S3 ──────────────────────────
     loop = asyncio.get_running_loop()
     getter = _getter(entity_id)
     url = await loop.run_in_executor(None, getter)
 
-    # When request is tiny (≤16 bytes), inflate to a full BLOCK so the
-    # follow-up read at the same offset is served from cache.
-    if req_start is not None and req_len is not None and req_len <= 16:
+    # Decide fetch strategy based on request size
+    if req_start is not None and req_len is not None and req_len <= BLOCK_SIZE:
+        # Small read → inflate to aligned block
         block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
         fetch_range = f"bytes={block_start}-{block_start + BLOCK_SIZE - 1}"
-        fetch_headers = {"Range": fetch_range}
-        inflate = True
+        strategy = "block"
+    elif req_start is not None and req_len is not None and req_len <= TILE_CACHE_ENTRY_MAX:
+        # Tile-sized → fetch exact, cache for revisits
+        fetch_range = raw_range
+        strategy = "tile"
     else:
-        fetch_headers = {"Range": raw_range} if raw_range else {}
-        inflate = False
+        # Large or no range → stream through
+        fetch_range = raw_range if raw_range else ""
+        strategy = "stream"
+
+    fetch_headers = {"Range": fetch_range} if fetch_range else {}
 
     t0 = time.monotonic()
     r = await _http.send(_http.build_request(request.method, url, headers=fetch_headers), stream=True)
@@ -173,25 +236,27 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         await r.aclose()
         return Response(status_code=r.status_code, headers=resp_headers)
 
-    if inflate and r.status_code in (200, 206):
-        # Buffer the block, cache it, then serve just the requested slice
+    # ─── Block strategy: buffer, cache block, serve requested slice ──
+    if strategy == "block" and r.status_code in (200, 206):
         block_data = await r.aread()
         block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
-        _cache_put(entity_id, block_start, block_data)
+        _block_put(entity_id, block_start, block_data)
         off = req_start - block_start
         chunk = block_data[off: off + req_len]
-        print(f"[proxy] GET {entity_id}  bytes={req_start}-{req_end}  inflated→{BLOCK_SIZE//1024}KB  {elapsed*1000:.0f}ms  cached", flush=True)
-        headers = {
-            "Content-Range":  f"bytes {req_start}-{req_end}/*",
-            "Content-Type":   "image/tiff",
-            "Content-Length": str(len(chunk)),
-        }
-        return Response(content=chunk, status_code=206, headers=headers)
+        print(f"[S3→block] {entity_id}  bytes={req_start}-{req_end}  fetch={BLOCK_SIZE//1024}KB  {elapsed*1000:.0f}ms", flush=True)
+        return _make_206(chunk, req_start, req_end)
 
+    # ─── Tile strategy: buffer, cache exact range, serve ─────────────
+    if strategy == "tile" and r.status_code in (200, 206):
+        tile_data = await r.aread()
+        _tile_put(entity_id, req_start, req_end, tile_data)
+        print(f"[S3→tile] {entity_id}  bytes={req_start}-{req_end}  {len(tile_data)}B  {elapsed*1000:.0f}ms", flush=True)
+        return _make_206(tile_data, req_start, req_end)
+
+    # ─── Stream strategy: pass through ───────────────────────────────
     resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
-    rng = raw_range or "full"
-    cl  = resp_headers.get("content-length", "?")
-    print(f"[proxy] GET {entity_id}  {rng}  -> {r.status_code}  {cl}B  {elapsed*1000:.0f}ms", flush=True)
+    cl = resp_headers.get("content-length", "?")
+    print(f"[S3→stream] {entity_id}  {raw_range or 'full'}  -> {r.status_code}  {cl}B  {elapsed*1000:.0f}ms", flush=True)
 
     return StreamingResponse(
         r.aiter_bytes(chunk_size=65536),
