@@ -62,7 +62,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://avivator.gehlenborglab.org", "http://localhost:3000"],
     allow_methods=["GET", "HEAD"],
     allow_headers=["Range"],
     expose_headers=["Content-Range", "Content-Length", "Accept-Ranges", "Content-Type"],
@@ -236,6 +236,8 @@ async def proxy_image(full_path: str, request: Request) -> Response:
     # Serve pre-generated offsets sidecar if present on disk
     if full_path.endswith(_OFFSETS_SUFFIX):
         entity_id = full_path[: -len(_OFFSETS_SUFFIX)]
+        if not _SYN_ID_RE.match(entity_id):
+            return Response(status_code=404)
         try:
             with open(f"{entity_id}.offsets.json", "rb") as f:
                 data = f.read()

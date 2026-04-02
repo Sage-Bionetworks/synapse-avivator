@@ -26,7 +26,6 @@ import tifffile
 from synapse_avivator.refreshing_url import RefreshingUrl, range_fetch
 
 ENTITY_ID = "syn74307866"  # default entity ID
-SYNAPSE_AUTH_TOKEN = None
 
 
 class RangeFile(io.RawIOBase):
@@ -71,10 +70,7 @@ def get_file_size(getter: RefreshingUrl) -> int:
 
 def generate(entity_id: str) -> None:
     syn = synapseclient.Synapse()
-    if SYNAPSE_AUTH_TOKEN:
-        syn.login(authToken=SYNAPSE_AUTH_TOKEN, silent=True)
-    else:
-        syn.login(silent=True)
+    syn.login(silent=True)
 
     getter = RefreshingUrl(entity_id, syn)
 
