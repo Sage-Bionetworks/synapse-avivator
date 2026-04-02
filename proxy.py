@@ -65,12 +65,25 @@ _PASSTHROUGH_HEADERS = {
 }
 _TIFF_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
 _SYN_ID_RE = re.compile(r"^syn\d+$")
+_OFFSETS_SUFFIX = ".offsets.json"
 
 
 @app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
 async def proxy_image(full_path: str, request: Request) -> Response:
     if "/" in full_path:
         return Response(status_code=404)
+
+    # Serve pre-generated offsets sidecar if present on disk
+    if full_path.endswith(_OFFSETS_SUFFIX):
+        entity_id = full_path[: -len(_OFFSETS_SUFFIX)]
+        offsets_path = f"{entity_id}.offsets.json"
+        try:
+            with open(offsets_path, "rb") as f:
+                data = f.read()
+            log.info("Serving cached offsets for %s (%d bytes)", entity_id, len(data))
+            return Response(content=data, media_type="application/json")
+        except FileNotFoundError:
+            return Response(status_code=404)
 
     entity_id = full_path
     for suffix in _TIFF_SUFFIXES:
