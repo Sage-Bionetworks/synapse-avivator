@@ -29,12 +29,7 @@ _http: httpx.AsyncClient | None = None
 async def lifespan(app: FastAPI):
     global _http
     limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
-    _http = httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=60,
-        limits=limits,
-        http2=True,  # multiplex many tile requests over fewer TLS connections
-    )
+    _http = httpx.AsyncClient(follow_redirects=True, timeout=60, limits=limits)
     yield
     await _http.aclose()
 
@@ -222,8 +217,8 @@ async def proxy_image(full_path: str, request: Request) -> Response:
     url = await loop.run_in_executor(None, getter)
 
     # Decide fetch strategy based on request size
-    if req_start is not None and req_len is not None and req_len <= BLOCK_SIZE:
-        # Small read → inflate to aligned block
+    if req_start is not None and req_len is not None and req_len <= 16:
+        # Tiny probe (1-byte reads etc) → inflate to aligned block
         block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
         fetch_range = f"bytes={block_start}-{block_start + BLOCK_SIZE - 1}"
         strategy = "block"
