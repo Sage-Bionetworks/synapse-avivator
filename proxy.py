@@ -104,8 +104,8 @@ _RANGE_RE = re.compile(r"bytes=(\d+)-(\d+)")
 BLOCK_SIZE = 256 * 1024               # 256 KB aligned blocks
 BLOCK_CACHE_MAX = 256 * 1024 * 1024   # 256 MB budget for blocks
 
-TILE_CACHE_ENTRY_MAX = 2 * 1024 * 1024  # cache tiles up to 2 MB
-TILE_CACHE_MAX = 256 * 1024 * 1024       # 256 MB budget for tiles
+TILE_CACHE_ENTRY_MAX = 5 * 1024 * 1024  # cache tiles up to 5 MB
+TILE_CACHE_MAX = 512 * 1024 * 1024       # 512 MB budget for tiles
 
 # OrderedDict gives us move-to-end for LRU + popitem(last=False) for eviction
 _block_cache: OrderedDict[tuple[str, int], bytes] = OrderedDict()
@@ -113,6 +113,10 @@ _block_cache_bytes = 0
 
 _tile_cache: OrderedDict[str, bytes] = OrderedDict()   # "eid:start-end" → bytes
 _tile_cache_bytes = 0
+
+# In-flight dedup: when multiple requests arrive for the same range before the
+# first one completes, they all await the same Future instead of hitting S3 again.
+_inflight: dict[str, asyncio.Future[bytes]] = {}
 
 # Total file size per entity, learned from S3's Content-Range header
 _file_sizes: dict[str, int] = {}
@@ -184,6 +188,17 @@ async def stats():
     }
 
 
+async def _fetch_with_retry(method: str, url: str, headers: dict, getter, loop) -> httpx.Response:
+    """Fetch from S3 with streaming, retry once on 403."""
+    r = await _http.send(_http.build_request(method, url, headers=headers), stream=True)
+    if r.status_code == 403:
+        await r.aclose()
+        getter.invalidate()
+        url = await loop.run_in_executor(None, getter)
+        r = await _http.send(_http.build_request(method, url, headers=headers), stream=True)
+    return r
+
+
 def _make_206(entity_id: str, data: bytes, start: int, end: int) -> Response:
     total = _file_sizes.get(entity_id, "*")
     return Response(
@@ -250,65 +265,113 @@ async def proxy_image(full_path: str, request: Request) -> Response:
 
     # Decide fetch strategy based on request size
     if req_start is not None and req_len is not None and req_len <= 16:
-        # Tiny probe (1-byte reads etc) → inflate to aligned block
-        block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
-        fetch_range = f"bytes={block_start}-{block_start + BLOCK_SIZE - 1}"
         strategy = "block"
     elif req_start is not None and req_len is not None and req_len <= TILE_CACHE_ENTRY_MAX:
-        # Tile-sized → fetch exact, cache for revisits
-        fetch_range = raw_range
         strategy = "tile"
     else:
-        # Large or no range → stream through
-        fetch_range = raw_range if raw_range else ""
         strategy = "stream"
 
-    fetch_headers = {"Range": fetch_range} if fetch_range else {}
-
-    t0 = time.monotonic()
-    r = await _http.send(_http.build_request(request.method, url, headers=fetch_headers), stream=True)
-
-    if r.status_code == 403:
-        await r.aclose()
-        getter.invalidate()
-        url = await loop.run_in_executor(None, getter)
-        r = await _http.send(_http.build_request(request.method, url, headers=fetch_headers), stream=True)
-
-    elapsed = time.monotonic() - t0
-
-    if request.method == "HEAD":
-        resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
-        await r.aclose()
-        return Response(status_code=r.status_code, headers=resp_headers)
-
-    # ─── Block strategy: buffer, cache block, serve requested slice ──
-    if strategy == "block" and r.status_code in (200, 206):
-        _learn_file_size(entity_id, r)
-        block_data = await r.aread()
+    # ─── Block strategy ──────────────────────────────────────────────
+    if strategy == "block":
         block_start = (req_start // BLOCK_SIZE) * BLOCK_SIZE
-        _block_put(entity_id, block_start, block_data)
-        off = req_start - block_start
-        chunk = block_data[off: off + req_len]
-        log.info("[S3→block] %s  bytes=%d-%d  fetch=%dKB  %dms", entity_id, req_start, req_end, BLOCK_SIZE//1024, elapsed*1000)
-        return _make_206(entity_id, chunk, req_start, req_end)
+        fetch_range = f"bytes={block_start}-{block_start + BLOCK_SIZE - 1}"
+        t0 = time.monotonic()
+        r = await _fetch_with_retry(request.method, url, {"Range": fetch_range}, getter, loop)
+        elapsed = time.monotonic() - t0
 
-    # ─── Tile strategy: buffer, cache exact range, serve ─────────────
-    if strategy == "tile" and r.status_code in (200, 206):
+        if request.method == "HEAD":
+            resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
+            await r.aclose()
+            return Response(status_code=r.status_code, headers=resp_headers)
+
+        if r.status_code in (200, 206):
+            _learn_file_size(entity_id, r)
+            block_data = await r.aread()
+            _block_put(entity_id, block_start, block_data)
+            off = req_start - block_start
+            chunk = block_data[off: off + req_len]
+            log.info("[S3→block] %s  bytes=%d-%d  fetch=%dKB  %dms", entity_id, req_start, req_end, BLOCK_SIZE // 1024, elapsed * 1000)
+            return _make_206(entity_id, chunk, req_start, req_end)
+
+    # ─── Tile strategy with inflight dedup ───────────────────────────
+    if strategy == "tile":
+        dedup_key = f"{entity_id}:{req_start}-{req_end}"
+
+        # Another request for the same range is already in flight — wait for it
+        if dedup_key in _inflight:
+            log.info("[dedup] %s  bytes=%d-%d  waiting", entity_id, req_start, req_end)
+            data = await _inflight[dedup_key]
+            return _make_206(entity_id, data, req_start, req_end)
+
+        # We're the first — create a Future so concurrent requests can wait on us
+        fut: asyncio.Future[bytes] = loop.create_future()
+        _inflight[dedup_key] = fut
+        try:
+            t0 = time.monotonic()
+            r = await _fetch_with_retry(request.method, url, {"Range": raw_range}, getter, loop)
+            elapsed = time.monotonic() - t0
+
+            if request.method == "HEAD":
+                resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
+                await r.aclose()
+                return Response(status_code=r.status_code, headers=resp_headers)
+
+            if r.status_code in (200, 206):
+                _learn_file_size(entity_id, r)
+                tile_data = await r.aread()
+                _tile_put(entity_id, req_start, req_end, tile_data)
+                log.info("[S3→tile] %s  bytes=%d-%d  %dB  %dms", entity_id, req_start, req_end, len(tile_data), elapsed * 1000)
+                fut.set_result(tile_data)
+                return _make_206(entity_id, tile_data, req_start, req_end)
+        except Exception as exc:
+            fut.set_exception(exc)
+            raise
+        finally:
+            _inflight.pop(dedup_key, None)
+
+    # ─── Stream strategy (large reads) with dedup ────────────────────
+    dedup_key = f"{entity_id}:{raw_range}" if raw_range else None
+
+    if dedup_key and dedup_key in _inflight:
+        log.info("[dedup] %s  %s  waiting", entity_id, raw_range)
+        data = await _inflight[dedup_key]
+        total = _file_sizes.get(entity_id, "*")
+        return Response(content=data, status_code=206,
+                        headers={"Content-Range": f"bytes {req_start}-{req_end}/{total}",
+                                 "Content-Type": "image/tiff",
+                                 "Content-Length": str(len(data))})
+
+    fetch_headers = {"Range": raw_range} if raw_range else {}
+    if dedup_key:
+        fut = loop.create_future()
+        _inflight[dedup_key] = fut
+
+    try:
+        t0 = time.monotonic()
+        r = await _fetch_with_retry(request.method, url, fetch_headers, getter, loop)
+        elapsed = time.monotonic() - t0
+
+        if request.method == "HEAD":
+            resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
+            await r.aclose()
+            return Response(status_code=r.status_code, headers=resp_headers)
+
         _learn_file_size(entity_id, r)
-        tile_data = await r.aread()
-        _tile_put(entity_id, req_start, req_end, tile_data)
-        log.info("[S3→tile] %s  bytes=%d-%d  %dB  %dms", entity_id, req_start, req_end, len(tile_data), elapsed*1000)
-        return _make_206(entity_id, tile_data, req_start, req_end)
 
-    # ─── Stream strategy: pass through ───────────────────────────────
-    _learn_file_size(entity_id, r)
-    resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
-    cl = resp_headers.get("content-length", "?")
-    log.info("[S3→stream] %s  %s  -> %d  %sB  %dms", entity_id, raw_range or "full", r.status_code, cl, elapsed*1000)
+        # Buffer large reads too so we can dedup — they're at most a few MB
+        data = await r.aread()
+        resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
+        cl = len(data)
+        log.info("[S3→large] %s  %s  -> %d  %dB  %dms", entity_id, raw_range or "full", r.status_code, cl, elapsed * 1000)
 
-    return StreamingResponse(
-        r.aiter_bytes(chunk_size=65536),
-        status_code=r.status_code,
-        headers=resp_headers,
-        background=BackgroundTask(r.aclose),
-    )
+        if dedup_key:
+            fut.set_result(data)
+
+        return Response(content=data, status_code=r.status_code, headers=resp_headers)
+    except Exception as exc:
+        if dedup_key:
+            fut.set_exception(exc)
+        raise
+    finally:
+        if dedup_key:
+            _inflight.pop(dedup_key, None)
