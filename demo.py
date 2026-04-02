@@ -61,3 +61,16 @@ class RefreshingUrl:
 
     def __call__(self) -> str:
         return self.get()
+
+
+def range_fetch(getter: RefreshingUrl, offset: int, length: int) -> bytes:
+    """Issue a single byte-range GET. Retries once on 403 with a fresh URL."""
+    url = getter()
+    headers = {"Range": f"bytes={offset}-{offset + length - 1}"}
+    r = requests.get(url, headers=headers, timeout=30)
+    if r.status_code == 403:
+        getter.invalidate()
+        url = getter()
+        r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    return r.content
