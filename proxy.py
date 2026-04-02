@@ -47,8 +47,22 @@ _PASSTHROUGH_HEADERS = {
 }
 
 
-@app.api_route("/image/{entity_id}", methods=["GET", "HEAD"])
-async def proxy_image(entity_id: str, request: Request) -> Response:
+_TIFF_SUFFIXES = (".ome.tiff", ".ome.tif", ".tiff", ".tif")
+
+
+@app.api_route("/image/{full_path:path}", methods=["GET", "HEAD"])
+async def proxy_image(full_path: str, request: Request) -> Response:
+    # Reject sub-path probes like "syn123/METADATA.ome.xml"
+    if "/" in full_path:
+        return Response(status_code=404)
+
+    # Strip TIFF extension hint so Avivator can declare the format in the URL
+    entity_id = full_path
+    for suffix in _TIFF_SUFFIXES:
+        if entity_id.lower().endswith(suffix):
+            entity_id = entity_id[: -len(suffix)]
+            break
+
     getter = _getter(entity_id)
     url = getter()
 
