@@ -8,8 +8,8 @@ Then point Avivator at:
     http://localhost:8000/image/syn74307866.ome.tiff
 """
 import asyncio
-import logging
 import re
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -20,8 +20,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 
 from demo import SYNAPSE_AUTH_TOKEN, RefreshingUrl
-
-log = logging.getLogger("proxy")
 
 _http: httpx.AsyncClient | None = None
 
@@ -80,7 +78,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         try:
             with open(offsets_path, "rb") as f:
                 data = f.read()
-            log.info("Serving cached offsets for %s (%d bytes)", entity_id, len(data))
+            print(f"[proxy] offsets {entity_id}  {len(data)}B", flush=True)
             return Response(content=data, media_type="application/json")
         except FileNotFoundError:
             return Response(status_code=404)
@@ -103,6 +101,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         forward["Range"] = request.headers["range"]
 
     # Stream the response — don't buffer the full body before sending
+    t0 = time.monotonic()
     r = await _http.send(_http.build_request(request.method, url, headers=forward), stream=True)
 
     if r.status_code == 403:
@@ -111,11 +110,11 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         url = await loop.run_in_executor(None, getter)
         r = await _http.send(_http.build_request(request.method, url, headers=forward), stream=True)
 
+    elapsed = time.monotonic() - t0
     resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
-    log.info("%s %s range=%s -> %s %s",
-             request.method, entity_id,
-             forward.get("Range", "none"), r.status_code,
-             resp_headers.get("content-length", "?") + "B")
+    cl = resp_headers.get("content-length", "?")
+    rng = forward.get("Range", "full")
+    print(f"[proxy] {request.method} {entity_id}  {rng}  -> {r.status_code}  {cl}B  {elapsed*1000:.0f}ms", flush=True)
 
     if request.method == "HEAD":
         await r.aclose()
