@@ -2,7 +2,7 @@
 Local proxy server that wraps Synapse presigned URL refresh for byte-range viewers.
 
 Usage:
-    uv run uvicorn proxy:app --port 8000
+    uv run uvicorn proxy:app --port 8000 --workers 4
 
 Then point Avivator at:
     http://localhost:8000/image/syn74307866.ome.tiff
