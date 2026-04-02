@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>synapse-avivator</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 80px auto; line-height: 1.6; }
+    input { width: 100%; padding: 8px; font-size: 16px; margin: 8px 0; }
+    button { padding: 8px 24px; font-size: 16px; cursor: pointer; }
+    .status { color: #666; font-size: 14px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>synapse-avivator</h1>
+  <p>Enter a Synapse entity ID to view in Avivator:</p>
+  <input id="entity" type="text" placeholder="syn51671125" />
+  <button onclick="go()">Open in Avivator</button>
+  <div class="status" id="status"></div>
+  <script>
+    // Auto-load if image_url is in query params (set by CLI)
+    const params = new URLSearchParams(window.location.search);
+    const imageUrl = params.get("image_url");
+    if (imageUrl) {
+      window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(imageUrl);
+    }
+
+    function go() {
+      const eid = document.getElementById("entity").value.trim();
+      if (!eid.match(/^syn\d+$/)) {
+        document.getElementById("status").textContent = "Enter a valid Synapse ID (e.g., syn51671125)";
+        return;
+      }
+      const url = window.location.origin + "/image/" + eid + ".ome.tiff";
+      window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(url);
+    }
+
+    document.getElementById("entity").addEventListener("keydown", e => {
+      if (e.key === "Enter") go();
+    });
+  </script>
+</body>
+</html>
