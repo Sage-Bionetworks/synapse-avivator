@@ -15,23 +15,23 @@ pip install git+https://github.com/Sage-Bionetworks/synapse-avivator.git
 Or run directly without installing:
 
 ```bash
-uvx --from git+https://github.com/Sage-Bionetworks/synapse-avivator.git synapse-avivator syn51671125
+uvx --from git+https://github.com/Sage-Bionetworks/synapse-avivator.git synapse-avivator syn74326609
 ```
 
 ## Usage
 
 ```bash
 # View a specific Synapse entity
-synapse-avivator syn51671125
+synapse-avivator syn74326609
 
 # Start the server, enter entity IDs in the browser UI
 synapse-avivator
 
 # Custom port
-synapse-avivator --port 9000 syn51671125
+synapse-avivator --port 9000 syn74326609
 
 # Verbose logging (writes session logs to logs/)
-synapse-avivator -v syn51671125
+synapse-avivator -v syn74326609
 ```
 
 ## Authentication
@@ -48,10 +48,10 @@ This creates `~/.synapseConfig` with your personal access token. Alternatively:
 ```bash
 # Environment variable
 export SYNAPSE_AUTH_TOKEN=your-token-here
-synapse-avivator syn51671125
+synapse-avivator syn74326609
 
 # CLI flag (visible in process list — prefer env var or config file)
-synapse-avivator --token your-token-here syn51671125
+synapse-avivator --token your-token-here syn74326609
 ```
 
 ## How it works
@@ -59,7 +59,7 @@ synapse-avivator --token your-token-here syn51671125
 ```
 Browser (Avivator)
     |
-    |  GET /image/syn51671125.ome.tiff
+    |  GET /image/syn74326609.ome.tiff
     |  Range: bytes=1048576-2097151
     v
 Local Proxy (localhost:8000)
