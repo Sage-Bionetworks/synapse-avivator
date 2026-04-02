@@ -23,7 +23,10 @@ import requests
 import synapseclient
 import tifffile
 
-from demo import ENTITY_ID, SYNAPSE_AUTH_TOKEN, RefreshingUrl, range_fetch
+from synapse_avivator.refreshing_url import RefreshingUrl, range_fetch
+
+ENTITY_ID = "syn74307866"  # default entity ID
+SYNAPSE_AUTH_TOKEN = None
 
 
 class RangeFile(io.RawIOBase):
