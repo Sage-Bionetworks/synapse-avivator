@@ -106,10 +106,12 @@ if _static_dir.is_dir():
     # Bundled Avivator viewer at /viewer
     if _viewer_dir.is_dir():
         @app.get("/viewer")
+        @app.get("/viewer/")
         async def viewer():
             return FileResponse(_viewer_dir / "index.html")
 
-        app.mount("/viewer", StaticFiles(directory=_viewer_dir), name="viewer")
+        # Serve viewer's static assets (JS/CSS) — mounted AFTER the explicit routes
+        app.mount("/viewer/assets", StaticFiles(directory=_viewer_dir / "assets"), name="viewer-assets")
 
 _syn: synapseclient.Synapse | None = None
 _gen3_endpoint: str | None = None
