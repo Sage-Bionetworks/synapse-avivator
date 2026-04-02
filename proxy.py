@@ -8,10 +8,13 @@ Then point Avivator at:
     http://localhost:8000/image/syn74307866.ome.tiff
 """
 import asyncio
+import logging
+import os
 import re
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import httpx
 import synapseclient
@@ -21,6 +24,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 
 from demo import SYNAPSE_AUTH_TOKEN, RefreshingUrl
+
+# ─── Session logging ──────────────────────────────────────────────────
+# Each server run creates a timestamped log file in logs/
+os.makedirs("logs", exist_ok=True)
+_session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+_log_path = f"logs/session-{_session_id}.log"
+
+log = logging.getLogger("proxy")
+log.setLevel(logging.DEBUG)
+_fh = logging.FileHandler(_log_path)
+_fh.setFormatter(logging.Formatter("%(asctime)s.%(msecs)03d  %(message)s", datefmt="%H:%M:%S"))
+log.addHandler(_fh)
+_sh = logging.StreamHandler()
+_sh.setFormatter(logging.Formatter("%(message)s"))
+log.addHandler(_sh)
+
+log.info("session %s  log: %s", _session_id, _log_path)
 
 _http: httpx.AsyncClient | None = None
 
@@ -152,6 +172,18 @@ def _learn_file_size(entity_id: str, r: httpx.Response) -> None:
         _file_sizes[entity_id] = int(m.group(1))
 
 
+@app.get("/stats")
+async def stats():
+    return {
+        "session": _session_id,
+        "log": _log_path,
+        "block_cache": {"entries": len(_block_cache), "bytes": _block_cache_bytes},
+        "tile_cache": {"entries": len(_tile_cache), "bytes": _tile_cache_bytes},
+        "file_sizes": _file_sizes,
+        "entities": list(_getters.keys()),
+    }
+
+
 def _make_206(entity_id: str, data: bytes, start: int, end: int) -> Response:
     total = _file_sizes.get(entity_id, "*")
     return Response(
@@ -177,7 +209,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         try:
             with open(f"{entity_id}.offsets.json", "rb") as f:
                 data = f.read()
-            print(f"[proxy] offsets {entity_id}  {len(data)}B", flush=True)
+            log.info("[proxy] offsets %s  %dB", entity_id, len(data))
             return Response(content=data, media_type="application/json")
         except FileNotFoundError:
             return Response(status_code=404)
@@ -202,13 +234,13 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         # Tier 2: exact tile match
         hit = _tile_get(entity_id, req_start, req_end)
         if hit is not None:
-            print(f"[cache] TILE {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
+            log.info("[cache] TILE %s  bytes=%d-%d  %dB", entity_id, req_start, req_end, req_len)
             return _make_206(entity_id, hit, req_start, req_end)
 
         # Tier 1: block-aligned match (covers small reads including 1-byte probes)
         hit = _block_get(entity_id, req_start, req_len)
         if hit is not None:
-            print(f"[cache] BLOCK {entity_id}  bytes={req_start}-{req_end}  {req_len}B", flush=True)
+            log.info("[cache] BLOCK %s  bytes=%d-%d  %dB", entity_id, req_start, req_end, req_len)
             return _make_206(entity_id, hit, req_start, req_end)
 
     # ─── Cache miss → fetch from S3 ──────────────────────────
@@ -257,7 +289,7 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         _block_put(entity_id, block_start, block_data)
         off = req_start - block_start
         chunk = block_data[off: off + req_len]
-        print(f"[S3→block] {entity_id}  bytes={req_start}-{req_end}  fetch={BLOCK_SIZE//1024}KB  {elapsed*1000:.0f}ms", flush=True)
+        log.info("[S3→block] %s  bytes=%d-%d  fetch=%dKB  %dms", entity_id, req_start, req_end, BLOCK_SIZE//1024, elapsed*1000)
         return _make_206(entity_id, chunk, req_start, req_end)
 
     # ─── Tile strategy: buffer, cache exact range, serve ─────────────
@@ -265,14 +297,14 @@ async def proxy_image(full_path: str, request: Request) -> Response:
         _learn_file_size(entity_id, r)
         tile_data = await r.aread()
         _tile_put(entity_id, req_start, req_end, tile_data)
-        print(f"[S3→tile] {entity_id}  bytes={req_start}-{req_end}  {len(tile_data)}B  {elapsed*1000:.0f}ms", flush=True)
+        log.info("[S3→tile] %s  bytes=%d-%d  %dB  %dms", entity_id, req_start, req_end, len(tile_data), elapsed*1000)
         return _make_206(entity_id, tile_data, req_start, req_end)
 
     # ─── Stream strategy: pass through ───────────────────────────────
     _learn_file_size(entity_id, r)
     resp_headers = {k: v for k, v in r.headers.items() if k.lower() in _PASSTHROUGH_HEADERS}
     cl = resp_headers.get("content-length", "?")
-    print(f"[S3→stream] {entity_id}  {raw_range or 'full'}  -> {r.status_code}  {cl}B  {elapsed*1000:.0f}ms", flush=True)
+    log.info("[S3→stream] %s  %s  -> %d  %sB  %dms", entity_id, raw_range or "full", r.status_code, cl, elapsed*1000)
 
     return StreamingResponse(
         r.aiter_bytes(chunk_size=65536),
