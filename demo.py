@@ -42,7 +42,13 @@ class RefreshingUrl:
                 "includePreviewPreSignedURLs": False,
             }),
         )
-        return response["requestedFiles"][0]["preSignedURL"]
+        files = response.get("requestedFiles", [])
+        if not files or "preSignedURL" not in files[0]:
+            raise RuntimeError(
+                f"No presigned URL returned for {self.entity_id}. "
+                f"Check entity permissions and file handle status."
+            )
+        return files[0]["preSignedURL"]
 
     def get(self) -> str:
         if self._url is None or self._is_stale():

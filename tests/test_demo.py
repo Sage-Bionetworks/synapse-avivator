@@ -27,27 +27,44 @@ def test_refreshing_url_caches_url_when_fresh():
     syn = make_syn("https://example.com/cached")
     ru = RefreshingUrl("syn123", syn)
     ru()  # prime the cache
-    ru()  # should use cache
+    result = ru()  # should use cache
     assert syn.restPOST.call_count == 1
+    assert result == "https://example.com/cached"
 
 
 def test_refreshing_url_refreshes_when_stale():
     from demo import RefreshingUrl
-    syn = make_syn("https://example.com/stale")
+    syn = MagicMock()
+    entity = MagicMock()
+    entity.id = "syn123"
+    entity._file_handle = {"id": "99999"}
+    syn.get.return_value = entity
+    syn.restPOST.side_effect = [
+        {"requestedFiles": [{"preSignedURL": "https://example.com/v1"}]},
+        {"requestedFiles": [{"preSignedURL": "https://example.com/v2"}]},
+    ]
     ru = RefreshingUrl("syn123", syn)
-    ru()                   # prime cache
-    ru._fetched_at = 0.0   # force stale
-    ru()                   # should refresh
+    assert ru() == "https://example.com/v1"
+    ru._fetched_at = 0.0
+    assert ru() == "https://example.com/v2"
     assert syn.restPOST.call_count == 2
 
 
 def test_refreshing_url_invalidate_forces_refresh():
     from demo import RefreshingUrl
-    syn = make_syn("https://example.com/invalidated")
+    syn = MagicMock()
+    entity = MagicMock()
+    entity.id = "syn123"
+    entity._file_handle = {"id": "99999"}
+    syn.get.return_value = entity
+    syn.restPOST.side_effect = [
+        {"requestedFiles": [{"preSignedURL": "https://example.com/v1"}]},
+        {"requestedFiles": [{"preSignedURL": "https://example.com/v2"}]},
+    ]
     ru = RefreshingUrl("syn123", syn)
-    ru()
+    assert ru() == "https://example.com/v1"
     ru.invalidate()
-    ru()
+    assert ru() == "https://example.com/v2"
     assert syn.restPOST.call_count == 2
 
 
