@@ -29,7 +29,12 @@ _http: httpx.AsyncClient | None = None
 async def lifespan(app: FastAPI):
     global _http
     limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
-    _http = httpx.AsyncClient(follow_redirects=True, timeout=60, limits=limits)
+    _http = httpx.AsyncClient(
+        follow_redirects=True,
+        timeout=60,
+        limits=limits,
+        http2=True,  # multiplex many tile requests over fewer TLS connections
+    )
     yield
     await _http.aclose()
 
