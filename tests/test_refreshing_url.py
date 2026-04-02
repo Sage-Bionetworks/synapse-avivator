@@ -13,14 +13,14 @@ def make_syn(url="https://s3.example.com/file.tiff?X-Amz-Signature=abc"):
 
 
 def test_refreshing_url_returns_url_on_first_call():
-    from demo import RefreshingUrl
+    from synapse_avivator.refreshing_url import RefreshingUrl
     syn = make_syn("https://example.com/first")
     ru = RefreshingUrl("syn123", syn)
     assert ru() == "https://example.com/first"
 
 
 def test_refreshing_url_caches_url_when_fresh():
-    from demo import RefreshingUrl
+    from synapse_avivator.refreshing_url import RefreshingUrl
     syn = make_syn("https://example.com/cached")
     ru = RefreshingUrl("syn123", syn)
     ru()  # prime the cache
@@ -30,7 +30,7 @@ def test_refreshing_url_caches_url_when_fresh():
 
 
 def test_refreshing_url_refreshes_when_stale():
-    from demo import RefreshingUrl
+    from synapse_avivator.refreshing_url import RefreshingUrl
     syn = MagicMock()
     syn.restGET.return_value = {"dataFileHandleId": "99999"}
     syn.restPOST.side_effect = [
@@ -45,7 +45,7 @@ def test_refreshing_url_refreshes_when_stale():
 
 
 def test_refreshing_url_invalidate_forces_refresh():
-    from demo import RefreshingUrl
+    from synapse_avivator.refreshing_url import RefreshingUrl
     syn = MagicMock()
     syn.restGET.return_value = {"dataFileHandleId": "99999"}
     syn.restPOST.side_effect = [
@@ -60,7 +60,7 @@ def test_refreshing_url_invalidate_forces_refresh():
 
 
 def test_refreshing_url_prints_on_refresh(capsys):
-    from demo import RefreshingUrl
+    from synapse_avivator.refreshing_url import RefreshingUrl
     syn = make_syn()
     ru = RefreshingUrl("syn123", syn)
     ru()
@@ -70,7 +70,7 @@ def test_refreshing_url_prints_on_refresh(capsys):
 
 
 def test_range_fetch_returns_bytes():
-    from demo import RefreshingUrl, range_fetch
+    from synapse_avivator.refreshing_url import RefreshingUrl, range_fetch
     syn = make_syn("https://example.com/img.tiff")
     ru = RefreshingUrl("syn123", syn)
 
@@ -79,7 +79,7 @@ def test_range_fetch_returns_bytes():
     mock_response.content = b"\x49\x49\x2a\x00"  # TIFF little-endian magic
     mock_response.raise_for_status = MagicMock()
 
-    with patch("requests.get", return_value=mock_response) as mock_get:
+    with patch("synapse_avivator.refreshing_url.requests.get", return_value=mock_response) as mock_get:
         data = range_fetch(ru, offset=0, length=4)
 
     assert data == b"\x49\x49\x2a\x00"
@@ -88,7 +88,7 @@ def test_range_fetch_returns_bytes():
 
 
 def test_range_fetch_retries_on_403():
-    from demo import RefreshingUrl, range_fetch
+    from synapse_avivator.refreshing_url import RefreshingUrl, range_fetch
     syn = make_syn("https://example.com/img.tiff")
     ru = RefreshingUrl("syn123", syn)
     ru()  # prime cache
@@ -102,7 +102,7 @@ def test_range_fetch_retries_on_403():
     ok_response.content = b"TIFF"
     ok_response.raise_for_status = MagicMock()
 
-    with patch("requests.get", side_effect=[fail_response, ok_response]):
+    with patch("synapse_avivator.refreshing_url.requests.get", side_effect=[fail_response, ok_response]):
         data = range_fetch(ru, offset=0, length=4)
 
     assert data == b"TIFF"
@@ -110,7 +110,7 @@ def test_range_fetch_retries_on_403():
 
 
 def test_range_fetch_sends_correct_range_header():
-    from demo import RefreshingUrl, range_fetch
+    from synapse_avivator.refreshing_url import RefreshingUrl, range_fetch
     syn = make_syn("https://example.com/img.tiff")
     ru = RefreshingUrl("syn123", syn)
 
@@ -119,7 +119,7 @@ def test_range_fetch_sends_correct_range_header():
     mock_response.content = b"x" * 65536
     mock_response.raise_for_status = MagicMock()
 
-    with patch("requests.get", return_value=mock_response) as mock_get:
+    with patch("synapse_avivator.refreshing_url.requests.get", return_value=mock_response) as mock_get:
         range_fetch(ru, offset=1024, length=65536)
 
     call_headers = mock_get.call_args[1]["headers"]
