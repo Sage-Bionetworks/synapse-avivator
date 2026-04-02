@@ -71,7 +71,7 @@ def build_browser_url(port: int, entity_id: str | None) -> str:
         image_url = f"{base}/image/drs/{path_part}.ome.tiff"
     else:
         image_url = f"{base}/image/{entity_id}.ome.tiff"
-    return f"{base}/?image_url={quote(image_url, safe='')}"
+    return f"{base}/viewer/?image_url={quote(image_url, safe='')}"
 
 
 def authenticate_synapse(token: str | None) -> synapseclient.Synapse:
