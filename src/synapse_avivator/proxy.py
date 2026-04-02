@@ -71,9 +71,28 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://avivator.gehlenborglab.org", "http://localhost:3000"],
     allow_methods=["GET", "HEAD"],
-    allow_headers=["Range"],
+    allow_headers=["Range", "X-Synapse-Token"],
     expose_headers=["Content-Range", "Content-Length", "Accept-Ranges", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def strip_token_from_log(request: Request, call_next):
+    """Prevent tokens from appearing in uvicorn access logs.
+    Saves the real token in request.state, then sanitizes the query string."""
+    qs = request.scope.get("query_string", b"").decode()
+    if "token=" in qs:
+        # Parse and save the real token before sanitizing
+        from urllib.parse import parse_qs
+        params = parse_qs(qs)
+        token_list = params.get("token", [])
+        request.state.synapse_token = token_list[0] if token_list else None
+        # Sanitize the query string so logs don't show the token
+        cleaned = re.sub(r'token=[^&]+', 'token=***', qs)
+        request.scope["query_string"] = cleaned.encode()
+    else:
+        request.state.synapse_token = None
+    return await call_next(request)
 
 _static_dir = Path(__file__).parent / "static"
 if _static_dir.is_dir():
@@ -109,8 +128,9 @@ def set_hosted_mode(enabled: bool) -> None:
 
 
 def _extract_token(request: Request) -> str | None:
-    """Extract Synapse token from header or query param."""
+    """Extract Synapse token from header, middleware-saved state, or query param."""
     return (request.headers.get("x-synapse-token")
+            or getattr(request.state, "synapse_token", None)
             or request.query_params.get("token"))
 
 
