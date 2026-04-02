@@ -30,11 +30,16 @@ synapse-avivator
 # Custom port
 synapse-avivator --port 9000 syn74326609
 
+# View a Gen3/CRDC file via DRS URI
+synapse-avivator 'drs://nci-crdc.datacommons.io/dg.4DFC/C99353A6-51AB-4181-9910-86466DDF6F6E'
+
 # Verbose logging (writes session logs to logs/)
 synapse-avivator -v syn74326609
 ```
 
 ## Authentication
+
+### Synapse
 
 synapse-avivator reads your Synapse credentials automatically. Set up once with:
 
@@ -53,6 +58,23 @@ synapse-avivator syn74326609
 # CLI flag (visible in process list — prefer env var or config file)
 synapse-avivator --token your-token-here syn74326609
 ```
+
+### Gen3 / NCI CRDC
+
+To view files from the [NCI Cancer Research Data Commons](https://datacommons.cancer.gov/) via DRS URIs:
+
+1. Install with Gen3 support: `pip install "synapse-avivator[gen3]"`
+2. Log in at https://nci-crdc.datacommons.io/identity
+3. Go to Profile → "Create API key" → download `credentials.json`
+4. Place it at `~/.gen3/credentials.json`
+
+Then pass a DRS URI directly:
+
+```bash
+synapse-avivator 'drs://nci-crdc.datacommons.io/dg.4DFC/C99353A6-51AB-4181-9910-86466DDF6F6E'
+```
+
+The proxy parses the DRS URI, authenticates with the Gen3 endpoint, and handles presigned URL refresh the same way it does for Synapse (Gen3 URLs typically expire after 1 hour).
 
 ## How it works
 
