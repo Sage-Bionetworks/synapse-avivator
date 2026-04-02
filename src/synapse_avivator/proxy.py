@@ -99,16 +99,18 @@ _viewer_dir = _static_dir / "viewer"
 
 if _static_dir.is_dir():
     # Landing page at /
+    _no_cache = {"Cache-Control": "no-cache, must-revalidate"}
+
     @app.get("/")
     async def index():
-        return FileResponse(_static_dir / "index.html")
+        return FileResponse(_static_dir / "index.html", headers=_no_cache)
 
     # Bundled Avivator viewer at /viewer
     if _viewer_dir.is_dir():
         @app.get("/viewer")
         @app.get("/viewer/")
         async def viewer():
-            return FileResponse(_viewer_dir / "index.html")
+            return FileResponse(_viewer_dir / "index.html", headers=_no_cache)
 
         # Serve viewer's static assets (JS/CSS) — mounted AFTER the explicit routes
         app.mount("/viewer/assets", StaticFiles(directory=_viewer_dir / "assets"), name="viewer-assets")
