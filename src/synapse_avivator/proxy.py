@@ -26,7 +26,13 @@ from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
+import secrets
+
 from synapse_avivator.refreshing_url import BaseRefreshingUrl, SynapseRefreshingUrl, Gen3RefreshingUrl
+from synapse_avivator.auth import (
+    OAuthConfig, UserSession, build_authorize_url, exchange_code,
+    create_session, get_session, delete_session,
+)
 
 # ─── Session logging ──────────────────────────────────────────────────
 # Quiet by default. Enable with --verbose flag to write session logs to logs/.
@@ -86,10 +92,12 @@ if _static_dir.is_dir():
 _syn: synapseclient.Synapse | None = None
 _gen3_endpoint: str | None = None
 _gen3_auth = None  # gen3.auth.Gen3Auth instance
+_oauth_config: OAuthConfig | None = None  # set for hosted mode
+_hosted_mode = False
 
 
 def set_synapse_client(syn: synapseclient.Synapse) -> None:
-    """Called by CLI to inject the authenticated Synapse client."""
+    """Called by CLI (local mode) to inject the authenticated Synapse client."""
     global _syn
     _syn = syn
 
@@ -101,7 +109,54 @@ def set_gen3_client(endpoint: str, auth) -> None:
     _gen3_auth = auth
 
 
+def set_oauth_config(config: OAuthConfig) -> None:
+    """Called by CLI (hosted mode) to enable OAuth2 login."""
+    global _oauth_config, _hosted_mode
+    _oauth_config = config
+    _hosted_mode = True
+
+
+def _get_syn_for_request(request: Request) -> synapseclient.Synapse | None:
+    """Get the Synapse client for this request — local mode uses shared client, hosted uses per-session."""
+    if not _hosted_mode:
+        return _syn
+    session_id = request.cookies.get("session_id")
+    session = get_session(session_id)
+    if session is None:
+        return None
+    syn = synapseclient.Synapse()
+    syn.login(authToken=session.access_token, silent=True)
+    return syn
+
+
+# Per-session getters in hosted mode, shared in local mode
 _getters: dict[str, BaseRefreshingUrl] = {}
+_session_getters: dict[str, dict[str, BaseRefreshingUrl]] = {}
+
+
+def _getter_for(object_id: str, request: Request) -> BaseRefreshingUrl:
+    """Get or create a RefreshingUrl, scoped to the user session in hosted mode."""
+    if _hosted_mode:
+        session_id = request.cookies.get("session_id", "")
+        if session_id not in _session_getters:
+            _session_getters[session_id] = {}
+        getters = _session_getters[session_id]
+    else:
+        getters = _getters
+
+    if object_id not in getters:
+        syn = _get_syn_for_request(request)
+        if _SYN_ID_RE.match(object_id):
+            if syn is None:
+                raise ValueError("Not authenticated")
+            getters[object_id] = SynapseRefreshingUrl(object_id, syn)
+        elif object_id.startswith("drs://"):
+            if _gen3_auth is None:
+                raise ValueError("Gen3 auth required for DRS URI")
+            getters[object_id] = Gen3RefreshingUrl(object_id, _gen3_endpoint, _gen3_auth)
+        else:
+            raise ValueError(f"Unknown ID format: {object_id}")
+    return getters[object_id]
 
 # Gen3 GUIDs look like UUIDs: 8-4-4-4-12 hex chars
 _GEN3_GUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
@@ -231,6 +286,67 @@ async def stats():
     }
 
 
+# ─── OAuth2 auth routes (hosted mode only) ───────────────────────────
+
+@app.get("/auth/login")
+async def auth_login(request: Request):
+    if not _oauth_config:
+        return Response(status_code=404)
+    state = secrets.token_urlsafe(16)
+    url = build_authorize_url(_oauth_config, state)
+    response = Response(status_code=302, headers={"Location": url})
+    response.set_cookie("oauth_state", state, httponly=True, samesite="lax", max_age=600)
+    return response
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    if not _oauth_config:
+        return Response(status_code=404)
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    expected_state = request.cookies.get("oauth_state")
+    if not code or not state or state != expected_state:
+        return Response(content="Invalid OAuth callback", status_code=400)
+
+    user_session = await exchange_code(_oauth_config, code)
+    session_id = create_session(user_session)
+
+    response = Response(status_code=302, headers={"Location": "/"})
+    response.set_cookie(
+        "session_id", session_id,
+        httponly=True, samesite="lax", secure=request.url.scheme == "https",
+        max_age=86400,  # 24 hours (matches Synapse access token lifetime)
+    )
+    response.delete_cookie("oauth_state")
+    log.info("[auth] user %s logged in", user_session.user_id)
+    return response
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        # Clean up per-session getters
+        _session_getters.pop(session_id, None)
+        delete_session(session_id)
+    response = Response(status_code=302, headers={"Location": "/"})
+    response.delete_cookie("session_id")
+    return response
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    """Return current user info, or 401 if not authenticated."""
+    session_id = request.cookies.get("session_id")
+    session = get_session(session_id)
+    if session is None and _hosted_mode:
+        return Response(status_code=401)
+    if session:
+        return {"user_id": session.user_id, "username": session.username, "mode": "hosted"}
+    return {"mode": "local"}
+
+
 async def _fetch_with_retry(method: str, url: str, headers: dict, getter, loop) -> httpx.Response:
     """Fetch from S3 with streaming, retry once on 403."""
     r = await _http.send(_http.build_request(method, url, headers=headers), stream=True)
@@ -329,9 +445,15 @@ async def proxy_image(full_path: str, request: Request) -> Response:
             log.info("[cache] BLOCK %s  bytes=%d-%d  %dB", entity_id, req_start, req_end, req_len)
             return _make_206(entity_id, hit, req_start, req_end)
 
+    # ─── Auth check (hosted mode) ──────────────────────────────
+    if _hosted_mode:
+        session_id = request.cookies.get("session_id")
+        if not get_session(session_id):
+            return Response(status_code=401, content="Not authenticated")
+
     # ─── Cache miss → fetch from S3 ──────────────────────────
     loop = asyncio.get_running_loop()
-    getter = _getter(entity_id)
+    getter = _getter_for(entity_id, request)
     url = await loop.run_in_executor(None, getter)
 
     # Decide fetch strategy based on request size

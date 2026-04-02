@@ -5,17 +5,30 @@
   <title>synapse-avivator</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 600px; margin: 80px auto; line-height: 1.6; }
-    input { width: 100%; padding: 8px; font-size: 16px; margin: 8px 0; }
+    input { width: 100%; padding: 8px; font-size: 16px; margin: 8px 0; box-sizing: border-box; }
     button { padding: 8px 24px; font-size: 16px; cursor: pointer; }
     .status { color: #666; font-size: 14px; margin-top: 16px; }
+    .user-bar { color: #666; font-size: 14px; margin-bottom: 16px; }
+    .login-prompt { margin: 40px 0; text-align: center; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <h1>synapse-avivator</h1>
-  <p>Enter a Synapse entity ID to view in Avivator:</p>
-  <input id="entity" type="text" placeholder="syn51671125" />
-  <button onclick="go()">Open in Avivator</button>
-  <div class="status" id="status"></div>
+
+  <div id="login-prompt" class="login-prompt hidden">
+    <p>Log in with your Synapse account to view images.</p>
+    <a href="/auth/login"><button>Login with Synapse</button></a>
+  </div>
+
+  <div id="main-ui" class="hidden">
+    <div id="user-bar" class="user-bar"></div>
+    <p>Enter a Synapse entity ID or DRS URI to view in Avivator:</p>
+    <input id="entity" type="text" placeholder="syn74326609 or drs://nci-crdc.datacommons.io/..." />
+    <button onclick="go()">Open in Avivator</button>
+    <div class="status" id="status"></div>
+  </div>
+
   <script>
     // Auto-load if image_url is in query params (set by CLI)
     const params = new URLSearchParams(window.location.search);
@@ -24,13 +37,34 @@
       window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(imageUrl);
     }
 
+    // Check auth status
+    fetch("/auth/me").then(r => {
+      if (r.status === 401) {
+        // Hosted mode, not logged in
+        document.getElementById("login-prompt").classList.remove("hidden");
+      } else {
+        r.json().then(data => {
+          document.getElementById("main-ui").classList.remove("hidden");
+          if (data.mode === "hosted") {
+            document.getElementById("user-bar").innerHTML =
+              "Logged in as " + data.user_id + ' &mdash; <a href="/auth/logout">logout</a>';
+          }
+        });
+      }
+    });
+
     function go() {
       const eid = document.getElementById("entity").value.trim();
-      if (!eid.match(/^syn\d+$/)) {
-        document.getElementById("status").textContent = "Enter a valid Synapse ID (e.g., syn51671125)";
+      let url;
+      if (eid.startsWith("drs://")) {
+        const path = eid.slice("drs://".length);
+        url = window.location.origin + "/image/drs/" + path + ".ome.tiff";
+      } else if (eid.match(/^syn\d+$/)) {
+        url = window.location.origin + "/image/" + eid + ".ome.tiff";
+      } else {
+        document.getElementById("status").textContent = "Enter a Synapse ID (syn...) or DRS URI (drs://...)";
         return;
       }
-      const url = window.location.origin + "/image/" + eid + ".ome.tiff";
       window.location.href = "https://avivator.gehlenborglab.org/?image_url=" + encodeURIComponent(url);
     }
 

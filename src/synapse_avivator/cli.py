@@ -47,6 +47,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Path to Gen3 credentials.json (default: {_DEFAULT_GEN3_CREDS})",
     )
     parser.add_argument(
+        "--hosted",
+        action="store_true",
+        default=False,
+        help="Run in hosted mode with Synapse OAuth2 login (requires SYNAPSE_OAUTH_CLIENT_ID and SYNAPSE_OAUTH_CLIENT_SECRET env vars)",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         default=False,
@@ -97,13 +103,26 @@ def authenticate_gen3(endpoint: str, creds_path: Path | None):
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    print("Authenticating with Synapse...")
-    syn = authenticate_synapse(args.token)
-    print(f"Logged in as {syn.credentials.owner_id}")
-
-    from synapse_avivator.proxy import set_synapse_client, set_gen3_client, set_verbose
-    set_synapse_client(syn)
+    from synapse_avivator.proxy import set_synapse_client, set_gen3_client, set_verbose, set_oauth_config
     set_verbose(args.verbose)
+
+    if args.hosted:
+        # Hosted mode: OAuth2 login, no local Synapse client needed at startup
+        from synapse_avivator.auth import OAuthConfig
+        client_id = os.environ.get("SYNAPSE_OAUTH_CLIENT_ID")
+        client_secret = os.environ.get("SYNAPSE_OAUTH_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            print("ERROR: --hosted requires SYNAPSE_OAUTH_CLIENT_ID and SYNAPSE_OAUTH_CLIENT_SECRET env vars")
+            raise SystemExit(1)
+        redirect_uri = f"http://localhost:{args.port}/auth/callback"
+        set_oauth_config(OAuthConfig(client_id, client_secret, redirect_uri))
+        print(f"Hosted mode: OAuth2 login enabled (callback: {redirect_uri})")
+    else:
+        # Local mode: authenticate with Synapse directly
+        print("Authenticating with Synapse...")
+        syn = authenticate_synapse(args.token)
+        print(f"Logged in as {syn.credentials.owner_id}")
+        set_synapse_client(syn)
 
     # Attempt Gen3 auth (optional — works if credentials exist)
     gen3_endpoint, gen3_auth = authenticate_gen3(args.gen3_endpoint, args.gen3_creds)
