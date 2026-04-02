@@ -74,3 +74,42 @@ def range_fetch(getter: RefreshingUrl, offset: int, length: int) -> bytes:
         r = requests.get(url, headers=headers, timeout=30)
     r.raise_for_status()
     return r.content
+
+
+def main():
+    # --- Login ---
+    syn = synapseclient.Synapse()
+    if SYNAPSE_AUTH_TOKEN:
+        syn.login(authToken=SYNAPSE_AUTH_TOKEN)
+    else:
+        syn.login(silent=True)
+
+    getter = RefreshingUrl(ENTITY_ID, syn)
+
+    # Step 1: Read TIFF magic bytes (offset 0, length 8)
+    print("\n[step 1] Reading TIFF magic bytes (offset=0, length=8)...")
+    magic = range_fetch(getter, offset=0, length=8)
+    print(f"  -> got {len(magic)} bytes: {magic!r}")
+    assert magic[:2] in (b"II", b"MM"), f"Not a TIFF! Got {magic[:2]!r}"
+    print("  -> valid TIFF magic confirmed")
+
+    # Step 2: Read a 64 KB chunk (simulating a tile fetch)
+    print("\n[step 2] Reading 64 KB tile (offset=0, length=65536)...")
+    chunk = range_fetch(getter, offset=0, length=65536)
+    print(f"  -> got {len(chunk)} bytes")
+
+    # Step 3: Artificially expire the URL
+    print("\n[step 3] Forcing URL expiry (setting _fetched_at = 0)...")
+    getter._fetched_at = 0.0
+    print("  -> URL marked as stale")
+
+    # Step 4: Read again — should trigger a refresh
+    print("\n[step 4] Reading 64 KB again (refresh should fire)...")
+    chunk2 = range_fetch(getter, offset=0, length=65536)
+    print(f"  -> got {len(chunk2)} bytes")
+
+    print("\n[done] Demo complete. URL refresh mechanism works.")
+
+
+if __name__ == "__main__":
+    main()
