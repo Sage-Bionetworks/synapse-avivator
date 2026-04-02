@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synapse-avivator"
+version = "0.1.0"
+description = "View Synapse-hosted OME-TIFF images in Avivator with transparent presigned URL refresh"
+requires-python = ">=3.10"
+dependencies = [
+    "synapseclient>=4.0.0",
+    "requests>=2.31.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-mock>=3.12.0",
+]
+
+[project.scripts]
+synapse-avivator = "synapse_avivator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/synapse_avivator"]
