@@ -130,11 +130,13 @@ S3 (presigned URL)
 - **Inflight dedup:** Concurrent identical S3 requests are coalesced
 
 **Security:**
-- Tokens are stripped from URLs and access logs by default (server-side behavior depends on the operator)
-- Tokens validated server-side before being stored in the browser
-- Bundled Avivator runs on your origin — no data sent to third parties
-- `sessionStorage` cleared on tab close
-- Local mode binds to `127.0.0.1` only; hosted/Cloud Run mode validates per-request credentials
+- **In transit:** HTTPS enforced on Cloud Run; tokens sent via HTTP headers, never in URLs
+- **At rest:** Tokens encrypted (Fernet) in server memory with a per-process random key
+- **At refresh time:** Hosted mode uses plain Synapse REST API — token decrypted momentarily for two HTTP calls, then goes out of scope. No `synapseclient` objects retain credentials.
+- **Browser:** `sessionStorage` cleared on tab close; tokens validated server-side before acceptance
+- **Logging:** Tokens stripped from access logs by default
+- **Local mode:** Proxy binds to `127.0.0.1` only
+- **Trust model:** Only use hosted instances you trust — the server operator controls what happens with credentials in transit
 
 ## Requirements
 
