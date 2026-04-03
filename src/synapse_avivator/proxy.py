@@ -61,6 +61,10 @@ async def lifespan(app: FastAPI):
     global _http
     limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
     _http = httpx.AsyncClient(follow_redirects=True, timeout=60, limits=limits)
+    # Auto-enable hosted mode when HOSTED=1 (for container deploys)
+    if os.environ.get("HOSTED", "").strip() in ("1", "true", "yes"):
+        set_hosted_mode(True)
+        log.info("hosted mode enabled via HOSTED env var")
     yield
     await _http.aclose()
 
@@ -70,8 +74,8 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://avivator.gehlenborglab.org", "http://localhost:3000"],
-    allow_methods=["GET", "HEAD"],
-    allow_headers=["Range", "X-Synapse-Token"],
+    allow_methods=["GET", "HEAD", "POST"],
+    allow_headers=["Range", "X-Synapse-Token", "X-Gen3-Credentials"],
     expose_headers=["Content-Range", "Content-Length", "Accept-Ranges", "Content-Type"],
 )
 
@@ -115,6 +119,14 @@ if _static_dir.is_dir():
         # Serve viewer's static assets (JS/CSS) — mounted AFTER the explicit routes
         app.mount("/viewer/assets", StaticFiles(directory=_viewer_dir / "assets"), name="viewer-assets")
 
+    # Static assets for the landing page (background image, etc.)
+    @app.get("/static/{filename:path}")
+    async def static_asset(filename: str):
+        path = _static_dir / filename
+        if path.is_file() and path.suffix in (".jpeg", ".jpg", ".png", ".webp", ".svg"):
+            return FileResponse(path, headers={"Cache-Control": "public, max-age=86400"})
+        return Response(status_code=404)
+
 _syn: synapseclient.Synapse | None = None
 _gen3_endpoint: str | None = None
 _gen3_auth = None  # gen3.auth.Gen3Auth instance
@@ -145,6 +157,25 @@ def _extract_token(request: Request) -> str | None:
     return (request.headers.get("x-synapse-token")
             or getattr(request.state, "synapse_token", None)
             or request.query_params.get("token"))
+
+
+def _extract_gen3_credentials(request: Request):
+    """Extract Gen3 credentials JSON from header. Returns (endpoint, auth) or (None, None)."""
+    creds_json = request.headers.get("x-gen3-credentials")
+    if not creds_json:
+        return None, None
+    try:
+        import json as _json
+        from gen3.auth import Gen3Auth
+        creds = _json.loads(creds_json)
+        auth = Gen3Auth(refresh_token=creds)
+        # Default to NCI CRDC endpoint
+        endpoint = "https://nci-crdc.datacommons.io"
+        return endpoint, auth
+    except ImportError:
+        return None, None
+    except Exception:
+        return None, None
 
 
 def _get_syn_for_request(request: Request) -> synapseclient.Synapse | None:
@@ -183,9 +214,15 @@ def _getter_for(object_id: str, request: Request) -> BaseRefreshingUrl:
                 raise ValueError("Not authenticated — provide a Synapse token")
             getters[object_id] = SynapseRefreshingUrl(object_id, syn)
         elif object_id.startswith("drs://"):
-            if _gen3_auth is None:
-                raise ValueError("Gen3 auth required for DRS URI")
-            getters[object_id] = Gen3RefreshingUrl(object_id, _gen3_endpoint, _gen3_auth)
+            # In hosted mode, try per-request Gen3 credentials from header
+            ep, auth = _gen3_endpoint, _gen3_auth
+            if _hosted_mode:
+                req_ep, req_auth = _extract_gen3_credentials(request)
+                if req_auth:
+                    ep, auth = req_ep, req_auth
+            if auth is None:
+                raise ValueError("Gen3 auth required for DRS URI — provide credentials")
+            getters[object_id] = Gen3RefreshingUrl(object_id, ep, auth)
         else:
             raise ValueError(f"Unknown ID format: {object_id}")
     return getters[object_id]
@@ -303,10 +340,58 @@ async def stats():
 
 @app.get("/auth/me")
 async def auth_me(request: Request):
-    """Report auth mode so the landing page knows whether to show the token input."""
+    """Report auth mode and discovered credentials."""
+    result: dict = {"mode": "hosted" if _hosted_mode else "local"}
     if not _hosted_mode:
-        return {"mode": "local"}
-    return {"mode": "hosted"}
+        if _syn is not None:
+            try:
+                profile = _syn.getUserProfile()
+                result["synapse"] = profile.get("userName", profile.get("ownerId", "authenticated"))
+            except Exception:
+                result["synapse"] = "authenticated"
+        if _gen3_auth is not None:
+            result["gen3"] = _gen3_endpoint or "authenticated"
+    return result
+
+
+@app.post("/auth/validate")
+async def auth_validate(request: Request):
+    """Validate a Synapse or Gen3 token. Returns {valid, user} or {valid, error}."""
+    loop = asyncio.get_running_loop()
+    body = await request.json()
+    service = body.get("service")  # "synapse" or "gen3"
+
+    if service == "synapse":
+        token = body.get("token", "")
+        if not token:
+            return {"valid": False, "error": "No token provided"}
+        try:
+            syn = synapseclient.Synapse()
+            await loop.run_in_executor(None, lambda: syn.login(authToken=token, silent=True))
+            profile = await loop.run_in_executor(None, lambda: syn.getUserProfile())
+            name = profile.get("userName", profile.get("ownerId", "unknown"))
+            return {"valid": True, "user": name}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    elif service == "gen3":
+        creds_json = body.get("credentials", "")
+        if not creds_json:
+            return {"valid": False, "error": "No credentials provided"}
+        try:
+            import json as _json
+            from gen3.auth import Gen3Auth
+            creds = _json.loads(creds_json) if isinstance(creds_json, str) else creds_json
+            auth = Gen3Auth(refresh_token=creds)
+            # Test the token by requesting an access token
+            await loop.run_in_executor(None, auth.get_access_token)
+            return {"valid": True, "user": "Gen3"}
+        except ImportError:
+            return {"valid": False, "error": "Gen3 package not installed on server"}
+        except Exception as e:
+            return {"valid": False, "error": str(e)}
+
+    return {"valid": False, "error": f"Unknown service: {service}"}
 
 
 async def _fetch_with_retry(method: str, url: str, headers: dict, getter, loop) -> httpx.Response:
@@ -409,8 +494,18 @@ async def proxy_image(full_path: str, request: Request) -> Response:
 
     # ─── Auth check (hosted mode) ──────────────────────────────
     if _hosted_mode:
-        if not _extract_token(request):
-            return Response(status_code=401, content="Provide token via X-Synapse-Token header or ?token= query param")
+        has_syn = bool(_extract_token(request))
+        has_gen3_header = bool(request.headers.get("x-gen3-credentials"))
+        has_gen3_server = _gen3_auth is not None
+        is_drs = entity_id.startswith("drs://")
+        # DRS requests pass if server has Gen3 creds OR browser sent them.
+        # Synapse requests need a user-provided token.
+        if is_drs:
+            if not has_gen3_header and not has_gen3_server:
+                return Response(status_code=401, content="Gen3 credentials required — provide via browser or server config")
+        else:
+            if not has_syn:
+                return Response(status_code=401, content="Provide Synapse token via X-Synapse-Token header")
 
     # ─── Cache miss → fetch from S3 ──────────────────────────
     loop = asyncio.get_running_loop()

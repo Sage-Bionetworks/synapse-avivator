@@ -79,7 +79,29 @@ For shared deployments where users can't provide local config files:
 synapse-avivator --hosted
 ```
 
-Users paste their Synapse Personal Access Token in the browser UI. The token is stored in `sessionStorage` (cleared on tab close) and sent to the proxy via a secure HTTP header — never in URLs, never logged, never stored on disk.
+Users paste their Synapse Personal Access Token and/or Gen3 API key in the browser UI. Tokens are validated server-side before being accepted. They are stored in `sessionStorage` (cleared on tab close) and sent to the proxy via secure HTTP headers — never in URLs, never logged, never stored on disk.
+
+### Cloud Run deployment
+
+Deploy as a hosted instance on Google Cloud Run:
+
+```bash
+gcloud run deploy synapse-avivator \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --memory 1Gi \
+  --min-instances 0 \
+  --max-instances 1
+```
+
+The container automatically runs in hosted mode (`HOSTED=1`). Users provide their own Synapse or Gen3 credentials via the browser UI. To add server-side Gen3 credentials as a secret:
+
+```bash
+gcloud secrets create gen3-credentials --data-file=$HOME/.gen3/credentials.json
+gcloud run services update synapse-avivator --region us-central1 \
+  --set-secrets=/root/.gen3/credentials.json=gen3-credentials:latest
+```
 
 ## How it works
 
@@ -109,9 +131,10 @@ S3 (presigned URL)
 
 **Security:**
 - Tokens never appear in URLs or server logs
+- Tokens validated server-side before being stored in the browser
 - Bundled Avivator runs on your origin — no data sent to third parties
 - `sessionStorage` cleared on tab close
-- Proxy binds to `127.0.0.1` only (not `0.0.0.0`)
+- Local mode binds to `127.0.0.1` only; hosted/Cloud Run mode validates per-request credentials
 
 ## Requirements
 

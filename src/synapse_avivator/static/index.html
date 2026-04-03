@@ -2,64 +2,658 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#000000" />
   <title>synapse-avivator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 80px auto; line-height: 1.6; }
-    input { width: 100%; padding: 8px; font-size: 16px; margin: 8px 0; box-sizing: border-box; }
-    button { padding: 8px 24px; font-size: 16px; cursor: pointer; }
-    .status { color: #666; font-size: 14px; margin-top: 16px; }
-    .token-section { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
-    .token-section p { margin: 0 0 8px 0; font-size: 14px; color: #666; }
-    .hidden { display: none; }
-    .connected { color: #2a7; font-weight: bold; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: #000;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      line-height: 1.5;
+    }
+
+    /* Fluorescence microscopy background */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: url('/static/background.jpeg') center/cover no-repeat;
+      opacity: 0.25;
+      pointer-events: none;
+    }
+
+    /* Dark vignette to keep text readable */
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 20%, rgba(0,0,0,0.7) 100%);
+      pointer-events: none;
+    }
+
+    .page {
+      width: 100%;
+      max-width: 880px;
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 40px;
+      align-items: start;
+      position: relative;
+      z-index: 1;
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        grid-template-columns: 1fr;
+        max-width: 520px;
+        gap: 24px;
+      }
+    }
+
+    /* Left: instructions */
+    .sidebar {
+      position: sticky;
+      top: 24px;
+    }
+
+    .sidebar h1 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 500;
+      letter-spacing: -0.5px;
+      color: #fff;
+      margin-bottom: 6px;
+    }
+
+    .sidebar h1 span { color: #4dd0e1; }
+
+    .sidebar .tagline {
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 24px;
+    }
+
+    .instructions {
+      font-size: 13px;
+      color: #777;
+      line-height: 1.7;
+    }
+
+    .instructions .step {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .step-num {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 500;
+      color: #4dd0e1;
+      background: rgba(77, 208, 225, 0.08);
+      border: 1px solid rgba(77, 208, 225, 0.15);
+      border-radius: 4px;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .step-text {
+      flex: 1;
+    }
+
+    .step-text code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: #999;
+      background: #111;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .instructions .note {
+      font-size: 11px;
+      color: #555;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #1a1a1a;
+    }
+
+    /* Right: cards */
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Auth cards */
+    .auth-card {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 16px;
+      transition: border-color 0.2s, max-height 0.35s ease, padding 0.35s ease, opacity 0.25s;
+      overflow: hidden;
+    }
+
+    .auth-card:focus-within { border-color: #333; }
+    .auth-card.connected { border-color: #1b5e20; }
+
+    /* Collapsed state */
+    .auth-card.collapsed {
+      padding: 12px 16px;
+      cursor: pointer;
+    }
+
+    .auth-card.collapsed .auth-body { display: none; }
+
+    .auth-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .auth-card:not(.collapsed) .auth-card-header {
+      margin-bottom: 10px;
+    }
+
+    .auth-card-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .auth-card-title .label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #888;
+    }
+
+    .badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 500;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: #1a1a2e;
+      color: #4dd0e1;
+      border: 1px solid #263238;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .user-name {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: #4caf50;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #333;
+      transition: background 0.3s;
+    }
+
+    .status-dot.active {
+      background: #4caf50;
+      box-shadow: 0 0 6px rgba(76, 175, 80, 0.4);
+    }
+
+    .status-dot.error {
+      background: #ef5350;
+      box-shadow: 0 0 6px rgba(239, 83, 80, 0.4);
+    }
+
+    .btn-edit {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: #555;
+      background: none;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 2px 8px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .btn-edit:hover { color: #888; border-color: #555; }
+
+    .auth-row {
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .auth-card input,
+    .auth-card textarea {
+      flex: 1;
+      background: #0a0a0a;
+      border: 1px solid #222;
+      border-radius: 6px;
+      padding: 9px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: #ccc;
+      outline: none;
+      transition: border-color 0.2s;
+      resize: none;
+    }
+
+    .auth-card input:focus,
+    .auth-card textarea:focus { border-color: #4dd0e1; }
+
+    .auth-card input::placeholder,
+    .auth-card textarea::placeholder { color: #444; }
+
+    .auth-help {
+      font-size: 11px;
+      color: #555;
+      margin-top: 8px;
+    }
+
+    .auth-help a {
+      color: #4dd0e1;
+      text-decoration: none;
+    }
+
+    .auth-help a:hover { text-decoration: underline; }
+
+    .auth-error {
+      font-size: 11px;
+      color: #ef5350;
+      margin-top: 6px;
+      display: none;
+    }
+
+    .auth-error.visible { display: block; }
+
+    .btn {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 9px 16px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+      color: #ccc;
+      background: #1a1a1a;
+    }
+
+    .btn:hover { background: #222; border-color: #444; color: #fff; }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn.validating {
+      color: #4dd0e1;
+      border-color: #263238;
+    }
+
+    /* Entity input */
+    .entity-section {
+      background: #111;
+      border: 1px solid #222;
+      border-radius: 10px;
+      padding: 16px;
+    }
+
+    .entity-section .label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: #888;
+      margin-bottom: 10px;
+      display: block;
+    }
+
+    .entity-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .entity-row input {
+      flex: 1;
+      background: #0a0a0a;
+      border: 1px solid #222;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      color: #fff;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .entity-row input:focus { border-color: #4dd0e1; }
+    .entity-row input::placeholder { color: #444; }
+
+    .btn-primary {
+      background: #0d47a1;
+      border-color: #1565c3;
+      color: #e3f2fd;
+    }
+
+    .btn-primary:hover {
+      background: #1565c3;
+      border-color: #1e88e5;
+      color: #fff;
+    }
+
+    .entity-hint {
+      font-size: 11px;
+      color: #444;
+      margin-top: 10px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .entity-hint span { color: #555; }
+
+    .status-msg {
+      font-size: 13px;
+      color: #ef5350;
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: rgba(239, 83, 80, 0.08);
+      border-radius: 6px;
+      border: 1px solid rgba(239, 83, 80, 0.15);
+      display: none;
+    }
+
+    .status-msg.visible { display: block; }
+
+    .hidden { display: none !important; }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .page > * {
+      animation: fadeUp 0.4s ease-out both;
+    }
+
+    .page > :nth-child(2) { animation-delay: 0.06s; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .validating-dot {
+      animation: pulse 1s ease-in-out infinite;
+      background: #4dd0e1 !important;
+    }
   </style>
 </head>
 <body>
-  <h1>synapse-avivator</h1>
+  <div class="page">
+    <!-- Left: instructions -->
+    <div class="sidebar">
+      <h1>synapse<span>-</span>avivator</h1>
+      <p class="tagline">View OME-TIFF images from Synapse and Gen3/CRDC</p>
 
-  <div id="token-section" class="token-section hidden">
-    <p>Paste your Synapse Personal Access Token (<a href="https://www.synapse.org/#!PersonalAccessTokens:" target="_blank">get one here</a>). It stays in your browser and is never stored on the server.</p>
-    <input id="token" type="password" placeholder="Synapse Personal Access Token" />
-    <button onclick="saveToken()">Connect</button>
-    <span id="token-status"></span>
-  </div>
+      <div id="instructions" class="instructions hidden">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-text">
+            Add your credentials. Use a <strong>Synapse PAT</strong> for <code>syn...</code> images,
+            or <strong>Gen3 API key</strong> for <code>drs://</code> images. You only need the one you plan to use.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-text">
+            Enter an entity ID and click <strong>View</strong>. The image loads directly in Avivator with full pan, zoom, and channel controls.
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-text">
+            Tokens stay in your browser's session storage. They're sent to this server to fetch presigned URLs but are <strong>never logged or persisted</strong>. Closing the tab clears them.
+          </div>
+        </div>
+        <div class="note">
+          The server proxies byte-range requests to cloud storage, automatically refreshing presigned URLs as they expire.
+        </div>
+      </div>
+    </div>
 
-  <div id="main-ui">
-    <p>Enter a Synapse entity ID or DRS URI to view in Avivator:</p>
-    <input id="entity" type="text" placeholder="syn74326609 or drs://nci-crdc.datacommons.io/..." />
-    <button onclick="go()">Open in Avivator</button>
-    <div class="status" id="status"></div>
+    <!-- Right: auth + entity -->
+    <div class="main">
+      <div id="auth-section" class="hidden">
+        <!-- Synapse token -->
+        <div class="auth-card" id="synapse-card" style="margin-bottom: 12px">
+          <div class="auth-card-header" onclick="expandCard('synapse')">
+            <div class="auth-card-title">
+              <span class="label">Synapse</span>
+              <span class="badge">PAT</span>
+            </div>
+            <div class="header-right">
+              <span class="user-name" id="syn-user"></span>
+              <button class="btn-edit hidden" id="syn-edit" onclick="event.stopPropagation(); expandCard('synapse')">edit</button>
+              <div class="status-dot" id="syn-dot"></div>
+            </div>
+          </div>
+          <div class="auth-body">
+            <div class="auth-row">
+              <input id="token" type="password" placeholder="Personal access token" autocomplete="off" />
+              <button class="btn" id="syn-btn" onclick="saveToken('synapse')">Connect</button>
+            </div>
+            <div class="auth-help">
+              <a href="https://www.synapse.org/#!PersonalAccessTokens:" target="_blank">Generate a token</a> -- stored in browser session only
+            </div>
+            <div class="auth-error" id="syn-error"></div>
+          </div>
+        </div>
+
+        <!-- Gen3 token -->
+        <div class="auth-card" id="gen3-card">
+          <div class="auth-card-header" onclick="expandCard('gen3')">
+            <div class="auth-card-title">
+              <span class="label">Gen3 / NCI CRDC</span>
+              <span class="badge">API key</span>
+            </div>
+            <div class="header-right">
+              <span class="user-name" id="gen3-user"></span>
+              <button class="btn-edit hidden" id="gen3-edit" onclick="event.stopPropagation(); expandCard('gen3')">edit</button>
+              <div class="status-dot" id="gen3-dot"></div>
+            </div>
+          </div>
+          <div class="auth-body">
+            <div class="auth-row">
+              <textarea id="gen3-creds" rows="2" placeholder='{"api_key": "...", "key_id": "..."}'></textarea>
+              <button class="btn" id="gen3-btn" onclick="saveToken('gen3')">Connect</button>
+            </div>
+            <div class="auth-help">
+              <a href="https://nci-crdc.datacommons.io/identity" target="_blank">Download credentials.json</a> -- paste the file contents above
+            </div>
+            <div class="auth-error" id="gen3-error"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="entity-section">
+        <span class="label">Open image</span>
+        <div class="entity-row">
+          <input id="entity" type="text" placeholder="syn74326609" autocomplete="off" />
+          <button class="btn btn-primary" onclick="go()">View</button>
+        </div>
+        <div class="entity-hint">
+          <span>syn12345</span> &nbsp;or&nbsp; <span>drs://nci-crdc.datacommons.io/...</span>
+        </div>
+        <div class="status-msg" id="status"></div>
+      </div>
+    </div>
   </div>
 
   <script>
-    // Auto-load if image_url is in query params (set by CLI)
     const params = new URLSearchParams(window.location.search);
     const imageUrl = params.get("image_url");
     if (imageUrl) {
       window.location.href = "/viewer/?image_url=" + encodeURIComponent(imageUrl);
     }
 
-    // Check if we're in hosted mode
+    // Check auth mode
     fetch("/auth/me").then(r => r.json()).then(data => {
       if (data.mode === "hosted") {
-        document.getElementById("token-section").classList.remove("hidden");
-        // Restore token from sessionStorage
-        const saved = sessionStorage.getItem("synapse_token");
-        if (saved) {
-          document.getElementById("token").value = saved;
-          document.getElementById("token-status").innerHTML = '<span class="connected">Connected</span>';
+        document.getElementById("auth-section").classList.remove("hidden");
+        document.getElementById("instructions").classList.remove("hidden");
+        // Restore and re-validate saved tokens
+        const synToken = sessionStorage.getItem("synapse_token");
+        if (synToken) {
+          document.getElementById("token").value = synToken;
+          validateToken("synapse", synToken);
+        }
+        const gen3Creds = sessionStorage.getItem("gen3_credentials");
+        if (gen3Creds) {
+          document.getElementById("gen3-creds").value = gen3Creds;
+          validateToken("gen3", gen3Creds);
+        }
+      } else {
+        // Local mode: show discovered auth as pre-connected cards
+        document.getElementById("auth-section").classList.remove("hidden");
+        if (data.synapse) {
+          setDot("synapse", "active");
+          collapseCard("synapse", data.synapse);
+        }
+        if (data.gen3) {
+          setDot("gen3", "active");
+          collapseCard("gen3", data.gen3);
         }
       }
     }).catch(() => {
-      // hosted mode, 401
-      document.getElementById("token-section").classList.remove("hidden");
+      document.getElementById("auth-section").classList.remove("hidden");
+      document.getElementById("instructions").classList.remove("hidden");
     });
 
-    function saveToken() {
-      const token = document.getElementById("token").value.trim();
-      if (!token) return;
-      sessionStorage.setItem("synapse_token", token);
-      document.getElementById("token-status").innerHTML = '<span class="connected">Connected</span>';
+    function setDot(service, state) {
+      const dot = document.getElementById(service === "synapse" ? "syn-dot" : "gen3-dot");
+      dot.classList.remove("active", "error", "validating-dot");
+      if (state === "active") dot.classList.add("active");
+      else if (state === "error") dot.classList.add("error");
+      else if (state === "validating") dot.classList.add("validating-dot");
+    }
+
+    function collapseCard(service, userName) {
+      const card = document.getElementById(service === "synapse" ? "synapse-card" : "gen3-card");
+      const userEl = document.getElementById(service === "synapse" ? "syn-user" : "gen3-user");
+      const editBtn = document.getElementById(service === "synapse" ? "syn-edit" : "gen3-edit");
+
+      card.classList.add("collapsed", "connected");
+      userEl.textContent = userName;
+      editBtn.classList.remove("hidden");
+    }
+
+    function expandCard(service) {
+      const card = document.getElementById(service === "synapse" ? "synapse-card" : "gen3-card");
+      const editBtn = document.getElementById(service === "synapse" ? "syn-edit" : "gen3-edit");
+      if (!card.classList.contains("collapsed")) return;
+      card.classList.remove("collapsed", "connected");
+      editBtn.classList.add("hidden");
+      setDot(service, "");
+    }
+
+    async function validateToken(service, value) {
+      const errEl = document.getElementById(service === "synapse" ? "syn-error" : "gen3-error");
+      const btn = document.getElementById(service === "synapse" ? "syn-btn" : "gen3-btn");
+      errEl.classList.remove("visible");
+      setDot(service, "validating");
+      btn.disabled = true;
+      btn.textContent = "Checking...";
+      btn.classList.add("validating");
+
+      try {
+        const body = service === "synapse"
+          ? { service: "synapse", token: value }
+          : { service: "gen3", credentials: value };
+        const r = await fetch("/auth/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (data.valid) {
+          sessionStorage.setItem(
+            service === "synapse" ? "synapse_token" : "gen3_credentials",
+            value
+          );
+          setDot(service, "active");
+          collapseCard(service, data.user || "connected");
+        } else {
+          setDot(service, "error");
+          errEl.textContent = data.error || "Invalid credentials";
+          errEl.classList.add("visible");
+        }
+      } catch (e) {
+        setDot(service, "error");
+        errEl.textContent = "Connection error";
+        errEl.classList.add("visible");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Connect";
+        btn.classList.remove("validating");
+      }
+    }
+
+    function saveToken(service) {
+      if (service === "synapse") {
+        const token = document.getElementById("token").value.trim();
+        if (!token) return;
+        validateToken("synapse", token);
+      } else {
+        const creds = document.getElementById("gen3-creds").value.trim();
+        if (!creds) return;
+        try {
+          const parsed = JSON.parse(creds);
+          if (!parsed.api_key) {
+            const errEl = document.getElementById("gen3-error");
+            errEl.textContent = "Credentials must contain an api_key field";
+            errEl.classList.add("visible");
+            return;
+          }
+        } catch {
+          const errEl = document.getElementById("gen3-error");
+          errEl.textContent = "Invalid JSON -- paste the contents of credentials.json";
+          errEl.classList.add("visible");
+          return;
+        }
+        validateToken("gen3", creds);
+      }
+    }
+
+    function showStatus(msg) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.classList.add("visible");
+      setTimeout(() => el.classList.remove("visible"), 5000);
     }
 
     function go() {
@@ -68,20 +662,20 @@
       if (eid.startsWith("drs://")) {
         const path = eid.slice("drs://".length);
         url = window.location.origin + "/image/drs/" + path + ".ome.tiff";
-      } else if (eid.match(/^syn\d+$/)) {
+      } else if (eid.match(/^syn\d+$/i)) {
         url = window.location.origin + "/image/" + eid + ".ome.tiff";
       } else {
-        document.getElementById("status").textContent = "Enter a Synapse ID (syn...) or DRS URI (drs://...)";
+        showStatus("Enter a Synapse ID (syn...) or DRS URI (drs://...)");
         return;
       }
-
-      // Token is in sessionStorage — the bundled Avivator's fetch interceptor
-      // reads it and adds X-Synapse-Token header automatically. No URL leakage.
       window.location.href = "/viewer/?image_url=" + encodeURIComponent(url);
     }
 
     document.getElementById("entity").addEventListener("keydown", e => {
       if (e.key === "Enter") go();
+    });
+    document.getElementById("token").addEventListener("keydown", e => {
+      if (e.key === "Enter") saveToken("synapse");
     });
   </script>
 </body>
