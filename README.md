@@ -79,7 +79,7 @@ For shared deployments where users can't provide local config files:
 synapse-avivator --hosted
 ```
 
-Users paste their Synapse Personal Access Token and/or Gen3 API key in the browser UI. Tokens are validated server-side before being accepted. They are stored in `sessionStorage` (cleared on tab close) and sent to the proxy via secure HTTP headers — never in URLs, never logged, never stored on disk.
+Users paste their Synapse Personal Access Token and/or Gen3 API key in the browser UI. Tokens are validated server-side before being accepted. They are stored in `sessionStorage` (cleared on tab close) and sent to the proxy via secure HTTP headers — not in URLs. The default server code strips tokens from access logs, but users should only connect to instances they trust since the server operator controls what happens with credentials in transit.
 
 ### Cloud Run deployment
 
@@ -130,7 +130,7 @@ S3 (presigned URL)
 - **Inflight dedup:** Concurrent identical S3 requests are coalesced
 
 **Security:**
-- Tokens never appear in URLs or server logs
+- Tokens are stripped from URLs and access logs by default (server-side behavior depends on the operator)
 - Tokens validated server-side before being stored in the browser
 - Bundled Avivator runs on your origin — no data sent to third parties
 - `sessionStorage` cleared on tab close

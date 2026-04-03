@@ -19,6 +19,7 @@ from pathlib import Path
 
 import httpx
 import synapseclient
+from cryptography.fernet import Fernet
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,20 @@ from starlette.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
 from synapse_avivator.refreshing_url import BaseRefreshingUrl, SynapseRefreshingUrl, Gen3RefreshingUrl
+
+# ─── Credential encryption ───────────────────────────────────────────
+# Random key generated at startup — lives only in process memory.
+# Used to encrypt tokens at rest in _hosted_tokens / _hosted_gen3_creds
+# so a memory dump doesn't directly expose plaintext credentials.
+_fernet = Fernet(Fernet.generate_key())
+
+
+def _encrypt(plaintext: str) -> bytes:
+    return _fernet.encrypt(plaintext.encode())
+
+
+def _decrypt(ciphertext: bytes) -> str:
+    return _fernet.decrypt(ciphertext).decode()
 
 # ─── Session logging ──────────────────────────────────────────────────
 # Quiet by default. Enable with --verbose flag to write session logs to logs/.
@@ -178,54 +193,69 @@ def _extract_gen3_credentials(request: Request):
         return None, None
 
 
-def _get_syn_for_request(request: Request) -> synapseclient.Synapse | None:
-    """Get Synapse client. Local mode: shared client. Hosted mode: per-request from token."""
-    if not _hosted_mode:
-        return _syn
-    token = _extract_token(request)
-    if not token:
-        return None
-    syn = synapseclient.Synapse()
-    syn.login(authToken=token, silent=True)
-    return syn
-
-
-# Per-token getters in hosted mode, shared in local mode
+# Presigned URL getters — shared across users since the URLs themselves
+# are not credential-bearing. In hosted mode, a token factory decrypts
+# the stored token at refresh time so plaintext is only live momentarily.
 _getters: dict[str, BaseRefreshingUrl] = {}
-_token_getters: dict[str, dict[str, BaseRefreshingUrl]] = {}
+
+# Encrypted credential storage for hosted mode.
+# Tokens are Fernet-encrypted at rest; decrypted only at the instant
+# of a presigned URL refresh, then the plaintext goes out of scope.
+_hosted_tokens: dict[str, bytes] = {}       # entity_id → encrypted Synapse token
+_hosted_gen3_creds: dict[str, bytes] = {}   # entity_id → encrypted Gen3 JSON
 
 
 def _getter_for(object_id: str, request: Request) -> BaseRefreshingUrl:
-    """Get or create a RefreshingUrl. In hosted mode, scoped per user token."""
-    if _hosted_mode:
-        token = _extract_token(request) or ""
-        # Use first 8 chars of token as cache key (enough to separate users)
-        token_key = token[:8] if token else ""
-        if token_key not in _token_getters:
-            _token_getters[token_key] = {}
-        getters = _token_getters[token_key]
-    else:
-        getters = _getters
+    """Get or create a RefreshingUrl.
 
-    if object_id not in getters:
-        syn = _get_syn_for_request(request)
+    In hosted mode, presigned URLs are cached by entity ID (not per-user).
+    The requesting user's token is encrypted and stored; a factory decrypts
+    it at refresh time for a momentary plaintext window.
+    """
+    if _hosted_mode:
+        # Encrypt and store the current request's token
+        token = _extract_token(request)
+        if token:
+            _hosted_tokens[object_id] = _encrypt(token)
+        gen3_creds = request.headers.get("x-gen3-credentials")
+        if gen3_creds:
+            _hosted_gen3_creds[object_id] = _encrypt(gen3_creds)
+
+    if object_id not in _getters:
         if _SYN_ID_RE.match(object_id):
-            if syn is None:
-                raise ValueError("Not authenticated — provide a Synapse token")
-            getters[object_id] = SynapseRefreshingUrl(object_id, syn)
-        elif object_id.startswith("drs://"):
-            # In hosted mode, try per-request Gen3 credentials from header
-            ep, auth = _gen3_endpoint, _gen3_auth
             if _hosted_mode:
-                req_ep, req_auth = _extract_gen3_credentials(request)
-                if req_auth:
-                    ep, auth = req_ep, req_auth
-            if auth is None:
-                raise ValueError("Gen3 auth required for DRS URI — provide credentials")
-            getters[object_id] = Gen3RefreshingUrl(object_id, ep, auth)
+                # Factory: decrypt token → plain REST API call → token out of scope
+                def _token_factory(oid=object_id):
+                    enc = _hosted_tokens.get(oid)
+                    if not enc:
+                        raise ValueError("No Synapse token available for refresh")
+                    return _decrypt(enc)
+                _getters[object_id] = SynapseRefreshingUrl(object_id, _token_factory)
+            else:
+                if _syn is None:
+                    raise ValueError("Not authenticated — provide a Synapse token")
+                _getters[object_id] = SynapseRefreshingUrl(object_id, _syn)
+        elif object_id.startswith("drs://"):
+            if _hosted_mode:
+                def _gen3_factory(oid=object_id):
+                    import json as _json
+                    from gen3.auth import Gen3Auth
+                    enc = _hosted_gen3_creds.get(oid)
+                    if not enc:
+                        if _gen3_auth is not None:
+                            return _gen3_auth
+                        raise ValueError("No Gen3 credentials available for refresh")
+                    return Gen3Auth(refresh_token=_json.loads(_decrypt(enc)))
+                ep = _gen3_endpoint or "https://nci-crdc.datacommons.io"
+                _getters[object_id] = Gen3RefreshingUrl(object_id, ep, auth_factory=_gen3_factory)
+            else:
+                if _gen3_auth is None:
+                    raise ValueError("Gen3 auth required for DRS URI")
+                _getters[object_id] = Gen3RefreshingUrl(object_id, _gen3_endpoint, _gen3_auth)
         else:
             raise ValueError(f"Unknown ID format: {object_id}")
-    return getters[object_id]
+
+    return _getters[object_id]
 
 
 _PASSTHROUGH_HEADERS = {
